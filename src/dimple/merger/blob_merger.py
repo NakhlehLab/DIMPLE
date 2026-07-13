@@ -7,15 +7,11 @@ Takes a divisions layout where each blob lives in its own subdir
 Per-blob, it:
 
   1. Collects the PhyloNet subnets across all runs of that blob.
-  2. Computes per-retic run coverage and selects a minimal run subset
-     ( mirrors the logic in summarize_reticulations.select_runs_for_blob,
-     but scoped to a single blob ).
-  3. Writes phylonet_inputs_full.txt and phylonet_inputs.txt inside the
-     blob dir.
-  4. Runs the DIMPLE merger: DT-select → compatible subset → OverlapNJ →
+  2. Writes phylonet_inputs_full.txt inside the blob dir (all-runs view).
+  3. Runs the DIMPLE merger: DT-select → compatible subset → OverlapNJ →
      orientation-aware retic addition (real MPL scorer). Single-run blobs
-     skip steps 2-4 and use their one subnet directly.
-  5. Saves base_tree.nwk and merged_network.nwk inside the blob dir.
+     skip steps 2-3 and use their one subnet directly.
+  4. Saves base_tree.nwk and merged_network.nwk inside the blob dir.
 
 Usage:
     conda run -n phylo-env python -u -m dimple.merger.blob_merger \
@@ -37,6 +33,7 @@ os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
 
 import sys
 import csv
+import json
 import time
 import argparse
 from itertools import combinations
@@ -109,6 +106,57 @@ def read_phylonet_subnets(run_dir, subnet_source):
 # ---------------------------------------------------------------------------
 # Retic coverage (mirrors summarize_reticulations, scoped to one blob)
 # ---------------------------------------------------------------------------
+
+def load_sibling_leaves(blob_dir):
+    """Read any run_*/subnetworks_output_metadata.csv in `blob_dir` and return
+    the union of TOB-external `sibling_leaves` listed in source_item JSON of
+    `blob_group` rows. Empty set for root mega-blobs (no external siblings)."""
+    siblings = set()
+    for run in list_run_dirs(blob_dir):
+        meta = os.path.join(blob_dir, run, 'subnetworks_output_metadata.csv')
+        if not os.path.exists(meta):
+            continue
+        try:
+            with open(meta) as f:
+                for row in csv.DictReader(f):
+                    if row.get('type') != 'blob_group':
+                        continue
+                    src = row.get('source_item', '')
+                    if not src.startswith('{'):
+                        continue
+                    try:
+                        siblings.update(json.loads(src).get('sibling_leaves', []))
+                    except Exception:
+                        pass
+        except Exception:
+            continue
+        if siblings:
+            break
+    return siblings
+
+
+def compute_outgroup_distances(dm, blob_taxa, sibling_leaves,
+                               outlier_multiplier=2.0):
+    """Per-blob-taxon distance to the synthetic OUT outgroup, computed as
+    `outlier_multiplier × mean(distance from t to each TOB-external sibling)`.
+
+    The multiplier (default 2.0) keeps OUT reliably outlying — raw mean
+    distances to sibling leaves can be comparable to intra-blob distances,
+    which lets NJ slip OUT between blob leaves rather than strictly outside.
+    Scaling preserves the per-taxon bias direction (closer to TOB-parent)
+    while ensuring the absolute magnitude is large enough."""
+    out = {}
+    sibs = [s for s in sibling_leaves if s in dm.index]
+    if not sibs:
+        return out
+    for t in blob_taxa:
+        if t not in dm.index:
+            continue
+        vals = [float(dm.at[t, s]) for s in sibs]
+        if vals:
+            out[t] = outlier_multiplier * (sum(vals) / len(vals))
+    return out
+
 
 def analyze_blob(blob_dir, subnet_source):
     """For one blob, analyze which runs cover which unique reticulations.
@@ -221,11 +269,19 @@ def write_inputs_file(out_path, run_names, run_subnets):
 # Merger
 # ---------------------------------------------------------------------------
 
-def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True):
+def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
+               source_blob_dir=None):
     """Run the full DIMPLE merger on a blob's phylonet_inputs_full.txt.
     Writes base_tree.nwk and merged_network.nwk into blob_dir.
     Returns (base_nwk, merged_nwk, n_retics_added).
+
+    `source_blob_dir`, if provided, is the original blob_dir under
+    `divisions_dir/blob*/` (which holds run_*/subnetworks_output_metadata.csv).
+    Used to pull TOB-external `sibling_leaves` for biasing the NJMerge OUT
+    rooting toward the TOB-parent direction. Defaults to `blob_dir`.
     """
+    if source_blob_dir is None:
+        source_blob_dir = blob_dir
     runs = parse_inputs_file(inputs_full_path)
     all_subnets = [s for r in runs.values() for s in r['subnets']]
     if not all_subnets:
@@ -242,11 +298,19 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True):
     timings = {'dm': 0.0, 'dt_select': 0.0, 'compat': 0.0,
                'njmerge': 0.0, 'retics': 0.0}
 
-    # 1. Distance matrix
+    # 1. Distance matrix — extend with TOB-external sibling leaves so we can
+    #    compute real gene-tree distances to a virtual OUT outgroup (= mean
+    #    distance to the sibling group). NJMerge uses this to root the blob
+    #    toward the TOB-parent direction instead of midpoint-rooting.
+    sibling_leaves = load_sibling_leaves(source_blob_dir)
+    if verbose and sibling_leaves:
+        print(f'  TOB-external sibling leaves: {len(sibling_leaves)} '
+              f'(used to bias NJMerge OUT placement)', flush=True)
     if verbose:
         print(f'  Computing distance matrix...', flush=True)
     t0 = time.time()
-    dm = compute_dm(gene_trees, all_taxa)
+    dm = compute_dm(gene_trees, all_taxa | set(sibling_leaves))
+    outgroup_distances = compute_outgroup_distances(dm, all_taxa, sibling_leaves)
     timings['dm'] = time.time() - t0
 
     # 2. DT-select
@@ -283,7 +347,8 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True):
     if verbose:
         print(f'  Running NJMerge on {len(compat)} compatible trees...', flush=True)
     t0 = time.time()
-    base_nwk = run_overlap_njmerge(compat, dm)
+    base_nwk = run_overlap_njmerge(compat, dm,
+                                    outgroup_distances=outgroup_distances or None)
     timings['njmerge'] = time.time() - t0
     with open(os.path.join(blob_dir, 'base_tree.nwk'), 'w') as f:
         f.write(base_nwk + '\n')
@@ -322,7 +387,6 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True):
 def process_blob(blob_dir, gene_trees, subnet_source, verbose=True):
     """Full pipeline for one blob subdir. Writes:
       phylonet_inputs_full.txt
-      phylonet_inputs.txt
       base_tree.nwk (only in multi-run case)
       merged_network.nwk
     """
@@ -344,8 +408,6 @@ def process_blob(blob_dir, gene_trees, subnet_source, verbose=True):
         run_subnets = {runs[0]: [nwk for _, nwk in subnets]}
         write_inputs_file(os.path.join(blob_dir, 'phylonet_inputs_full.txt'),
                           runs, run_subnets)
-        write_inputs_file(os.path.join(blob_dir, 'phylonet_inputs.txt'),
-                          runs, run_subnets)
         # The single subnet becomes the merged network (if multiple blob_group
         # rows in this one run, concat them — that's the complete blob model)
         t0 = time.time()
@@ -362,15 +424,11 @@ def process_blob(blob_dir, gene_trees, subnet_source, verbose=True):
 
     # Full pipeline
     runs_found, run_subnets, groups = analyze_blob(blob_dir, subnet_source)
-    selected_runs = select_covering_runs(runs_found, groups)
 
     inputs_full = os.path.join(blob_dir, 'phylonet_inputs_full.txt')
-    inputs_sel = os.path.join(blob_dir, 'phylonet_inputs.txt')
     n_full = write_inputs_file(inputs_full, runs_found, run_subnets)
-    n_sel = write_inputs_file(inputs_sel, selected_runs, run_subnets)
     if verbose:
-        print(f'  Wrote {n_full} runs to phylonet_inputs_full.txt', flush=True)
-        print(f'  Wrote {n_sel} runs to phylonet_inputs.txt '
+        print(f'  Wrote {n_full} runs to phylonet_inputs_full.txt '
               f'({len(groups)} unique retics)', flush=True)
 
     # Run merger (always on inputs_full.txt so we get full context).
@@ -394,7 +452,6 @@ def process_blob(blob_dir, gene_trees, subnet_source, verbose=True):
 
     return {
         'blob': blob_name, 'n_runs': len(runs_found),
-        'n_runs_selected': len(selected_runs),
         'n_unique_retics': len(groups),
         'n_retics_added': n_added,
         'mode': 'full',

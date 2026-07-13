@@ -75,7 +75,7 @@ from dimple.utils.network_util import (
 )
 from dimple.merger.blob_merger import (
     get_blob_name, list_run_dirs, read_phylonet_subnets,
-    analyze_blob, select_covering_runs, write_inputs_file, run_merger,
+    analyze_blob, write_inputs_file, run_merger,
     _default_gene_trees,
 )
 from dimple.utils.division_util import (
@@ -141,15 +141,13 @@ def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
             g2 = dict(g)
             g2['runs'] = kept
             groups.append(g2)
-    selected_runs = select_covering_runs(runs_found, groups)
     inputs_full = os.path.join(blob_out_dir, 'inputs_full.txt')
-    inputs_sel = os.path.join(blob_out_dir, 'inputs.txt')
     write_inputs_file(inputs_full, runs_found, run_subnets)
-    write_inputs_file(inputs_sel, selected_runs, run_subnets)
     t0 = time.time()
     try:
         _base, merged, n_added, timings = run_merger(
-            blob_out_dir, inputs_full, gene_trees, verbose=verbose)
+            blob_out_dir, inputs_full, gene_trees, verbose=verbose,
+            source_blob_dir=blob_dir)
     except Exception as e:
         import traceback; traceback.print_exc()
         return f'merger_err:{type(e).__name__}', None
@@ -159,7 +157,6 @@ def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
     with open(os.path.join(blob_out_dir, 'timing.json'), 'w') as f:
         json.dump({'mode': 'full', 'merger_seconds': elapsed,
                    'n_runs': len(runs_found),
-                   'n_runs_selected': len(selected_runs),
                    'n_unique_retics': len(groups),
                    'n_retics_added': n_added,
                    'step_timings': timings}, f, indent=2)
@@ -302,18 +299,15 @@ def main():
     # Identify blobs from metadata (authoritative source for blob names + items)
     blobs = list_blobs_from_metadata(args.metadata_dir)
     if not blobs:
-        # No blobs in the divider's TOB → nothing to merge. The TOB itself
-        # is the best whole-network reconstruction we can produce.
-        final_path = os.path.join(out_dir, 'merged_full.nwk')
-        tob_nwk = open(args.tob).read().strip()
-        with open(final_path, 'w') as f:
-            f.write(tob_nwk + '\n')
-        with open(os.path.join(out_dir, 'summary.tsv'), 'w') as f:
-            f.write('blob\tstatus\tmode\tn_runs\tn_retics_added\tmerger_seconds\n')
-        with open(os.path.join(out_dir, 'pipeline_timings.json'), 'w') as f:
-            json.dump({'note': 'no blobs → TOB returned as merged_full.nwk'}, f, indent=2)
-        print(f'no blobs in {args.metadata_dir} — wrote TOB → {final_path}', flush=True)
-        return
+        # No blobs in the divider's metadata. This is an error condition, not a
+        # valid result: the divider should have produced at least one blob for
+        # any non-trivial network. Report and fail instead of silently copying
+        # the TOB tree through as merged_full.nwk (which masks divider failures).
+        raise SystemExit(
+            f'ERROR: no blobs found in metadata_dir {args.metadata_dir} — '
+            f'nothing to merge. The divider produced no blob groups; check that '
+            f'its non_blob/blob* outputs were generated and transferred '
+            f'correctly. Refusing to fall back to copying the TOB tree.')
     print(f'blobs         → {len(blobs)}', flush=True)
 
     # Stage timings (peak memory captured by /usr/bin/time -v wrapper for

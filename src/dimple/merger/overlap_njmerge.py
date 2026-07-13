@@ -362,11 +362,24 @@ def merge_trees_via_nj(pdm, trees, verbose=False):
 # High-level wrappers (used by blob_merger)
 # ===========================================================================
 
-def run_overlap_njmerge(newick_list, dm):
+def run_overlap_njmerge(newick_list, dm, outgroup_distances=None):
     """Clean inputs, add an OUT outgroup taxon, run NJMerge, then reroot.
 
-    Returns the merged tree as a newick string.
+    outgroup_distances : dict[str, float]
+        REQUIRED. Per-real-taxon distance to the synthetic OUT outgroup.
+        Used to bias NJ to attach OUT toward the TOB-parent direction so the
+        resulting blob backbone is rooted consistent with the TOB. Every real
+        taxon in `newick_list` ∩ `dm.index` must be present. Passing None
+        raises ValueError — the legacy `max(dmat)*2` fallback was removed
+        because it produced TOB-inconsistent rooting.
     """
+    if outgroup_distances is None:
+        raise ValueError(
+            "run_overlap_njmerge requires outgroup_distances; the legacy "
+            "'max(dmat)*2 for all taxa' default has been removed because it "
+            "produced TOB-inconsistent rooting. Pass per-taxon distances "
+            "(e.g. mean DM distance to TOB-external sibling leaves)."
+        )
     trees = []
     all_taxa = set()
     for nwk in newick_list:
@@ -379,12 +392,20 @@ def run_overlap_njmerge(newick_list, dm):
     taxa = list(dm.loc[avail, avail].index)
     n = len(taxa)
 
+    missing = [t for t in taxa if t not in outgroup_distances]
+    if missing:
+        raise ValueError(
+            f"outgroup_distances missing values for {len(missing)} taxa: "
+            f"{missing[:5]}{'...' if len(missing) > 5 else ''}"
+        )
+
     new_d = np.zeros((n + 1, n + 1))
     new_d[:n, :n] = dmat
-    mx = np.max(dmat) * 2
+    out_row = np.array([float(outgroup_distances[t]) for t in taxa],
+                       dtype=float)
     for i in range(n):
-        new_d[i, n] = mx
-        new_d[n, i] = mx
+        new_d[i, n] = out_row[i]
+        new_d[n, i] = out_row[i]
 
     out_node = dendropy.Node()
     out_node.taxon = dendropy.Taxon(label='OUT')
