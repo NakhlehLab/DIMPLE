@@ -518,3 +518,46 @@ def compute_dm(gene_trees_file, taxa_set):
         cnt += 1
     return pd.DataFrame(S / max(cnt, 1), index=labels, columns=labels)
 
+
+def compute_dm_full(gene_trees_file, verbose=False):
+    """Average gene-tree distance matrix over EVERY taxon in `gene_trees_file`.
+
+    Identical values to `compute_dm` on any sub-block: entry (a, b) is the sum
+    of d_tree(a, b) over all gene trees divided by the TOTAL tree count, which
+    depends only on the pair (a, b) -- never on which other taxa happen to be
+    in the label set. So `compute_dm_full(f).loc[sub, sub]` equals
+    `compute_dm(f, sub)` exactly; slicing is not an approximation.
+
+    Computing this once per dataset instead of once per blob removes the
+    merger's dominant cost. `compute_dm` builds a full N x N
+    phylogenetic_distance_matrix() for every gene tree -- O(G * N^2) -- and
+    that work was previously repeated for each blob even though every blob
+    reads a sub-block of the same matrix.
+    """
+    shared_ns = dendropy.TaxonNamespace()
+    trees = TreeList.get(data=open(gene_trees_file).read(), schema='newick',
+                         taxon_namespace=shared_ns, rooting='default-rooted')
+    labels = sorted(t.label for t in shared_ns)
+    idx = {lab: i for i, lab in enumerate(labels)}
+    n = len(labels)
+    S = np.zeros((n, n))
+    cnt = 0
+    for tree in trees:
+        # Iterate the taxa actually present in this tree rather than testing
+        # every label for membership -- same result, far fewer lookups.
+        present = [l.taxon for l in tree.leaf_nodes() if l.taxon is not None]
+        pdm = tree.phylogenetic_distance_matrix()
+        for a in present:
+            i = idx.get(a.label)
+            if i is None:
+                continue
+            for b in present:
+                j = idx.get(b.label)
+                if j is None or i == j:
+                    continue
+                S[i, j] += pdm(a, b)
+        cnt += 1
+    if verbose:
+        print(f'  Shared DM: {n} taxa from {cnt} gene trees', flush=True)
+    return pd.DataFrame(S / max(cnt, 1), index=labels, columns=labels)
+

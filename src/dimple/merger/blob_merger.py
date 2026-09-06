@@ -49,7 +49,7 @@ from dimple.merger.merger_util import (
     find_reticulations as find_retics_with_sig,
     retics_are_same,
     parse_inputs_file,
-    get_taxa, compute_dm,
+    get_taxa, compute_dm, compute_dm_full,
 )
 from dimple.merger.overlap_njmerge import (
     run_overlap_njmerge, select_compatible_subset,
@@ -270,7 +270,7 @@ def write_inputs_file(out_path, run_names, run_subnets):
 # ---------------------------------------------------------------------------
 
 def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
-               source_blob_dir=None):
+               source_blob_dir=None, dm=None):
     """Run the full DIMPLE merger on a blob's phylonet_inputs_full.txt.
     Writes base_tree.nwk and merged_network.nwk into blob_dir.
     Returns (base_nwk, merged_nwk, n_retics_added).
@@ -279,6 +279,14 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
     `divisions_dir/blob*/` (which holds run_*/subnetworks_output_metadata.csv).
     Used to pull TOB-external `sibling_leaves` for biasing the NJMerge OUT
     rooting toward the TOB-parent direction. Defaults to `blob_dir`.
+
+    `dm`, if provided, is a distance matrix covering (at least) this blob's
+    taxa plus its sibling leaves -- normally the whole-dataset matrix from
+    `compute_dm_full`, built once and shared across every blob. Downstream
+    consumers already slice by label (`run_overlap_njmerge` takes
+    `dm.loc[avail, avail]`, `compute_outgroup_distances` indexes by taxon), so
+    a superset matrix is used as-is. Pass None to compute a blob-local matrix
+    the old way.
     """
     if source_blob_dir is None:
         source_blob_dir = blob_dir
@@ -306,10 +314,14 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
     if verbose and sibling_leaves:
         print(f'  TOB-external sibling leaves: {len(sibling_leaves)} '
               f'(used to bias NJMerge OUT placement)', flush=True)
-    if verbose:
-        print(f'  Computing distance matrix...', flush=True)
     t0 = time.time()
-    dm = compute_dm(gene_trees, all_taxa | set(sibling_leaves))
+    if dm is None:
+        if verbose:
+            print(f'  Computing distance matrix...', flush=True)
+        dm = compute_dm(gene_trees, all_taxa | set(sibling_leaves))
+    elif verbose:
+        print(f'  Reusing shared distance matrix ({len(dm.index)} taxa)',
+              flush=True)
     outgroup_distances = compute_outgroup_distances(dm, all_taxa, sibling_leaves)
     timings['dm'] = time.time() - t0
 
@@ -384,7 +396,7 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
 # Per-blob orchestration
 # ---------------------------------------------------------------------------
 
-def process_blob(blob_dir, gene_trees, subnet_source, verbose=True):
+def process_blob(blob_dir, gene_trees, subnet_source, verbose=True, dm=None):
     """Full pipeline for one blob subdir. Writes:
       phylonet_inputs_full.txt
       base_tree.nwk (only in multi-run case)
@@ -437,7 +449,7 @@ def process_blob(blob_dir, gene_trees, subnet_source, verbose=True):
     merger_t0 = time.time()
     try:
         _base, merged, n_added, step_timings = run_merger(
-            blob_dir, inputs_full, gene_trees, verbose=verbose)
+            blob_dir, inputs_full, gene_trees, verbose=verbose, dm=dm)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -504,6 +516,16 @@ def main():
                         os.path.isdir(os.path.join(args.divisions_dir, d))])
     print(f'Found {len(blob_dirs)} blob dirs', flush=True)
 
+    # Build the gene-tree distance matrix ONCE for the whole dataset. Every
+    # blob reads a sub-block of the same matrix, so computing it per blob
+    # repeated O(G * N^2) work `len(blob_dirs)` times for no gain.
+    dm_t0 = time.time()
+    shared_dm = compute_dm_full(args.gene_trees, verbose=True)
+    dm_build_seconds = time.time() - dm_t0
+    print(f'Shared distance matrix built in {dm_build_seconds:.2f}s '
+          f'({len(shared_dm.index)} taxa, reused by all {len(blob_dirs)} blobs)',
+          flush=True)
+
     n_ok = n_err = 0
     total_merger_seconds = 0.0
     step_totals = {'dm': 0.0, 'dt_select': 0.0, 'compat': 0.0,
@@ -513,7 +535,8 @@ def main():
         print(f'\n{"="*70}', flush=True)
         print(f'Processing {bd}', flush=True)
         print(f'{"="*70}', flush=True)
-        result, status = process_blob(bd, args.gene_trees, args.subnet_source)
+        result, status = process_blob(bd, args.gene_trees, args.subnet_source,
+                                      dm=shared_dm)
         if result is None:
             print(f'  FAILED: {status}', flush=True)
             n_err += 1
@@ -543,6 +566,8 @@ def main():
             print(f'  {name} [{mode}]: {t:.2f}s', flush=True)
     print(f'  TOTAL merger time: {total_merger_seconds:.2f}s '
           f'({total_merger_seconds/60:.2f} min)', flush=True)
+    print(f'  (+ shared distance matrix, built once: '
+          f'{dm_build_seconds:.2f}s)', flush=True)
     print(f'\n--- Per-step totals (sum across all blobs) ---', flush=True)
     st_total = sum(step_totals.values())
     for k in ['dm', 'dt_select', 'compat', 'njmerge', 'retics']:

@@ -51,16 +51,35 @@ def prune_orphan_internals(H, real_taxa, outgroup_set=frozenset({'OUT'})):
     After removing orphans, contracts any degree-2 internals that resulted.
     Repeats until stable.
     """
-    changed = True
-    while changed:
-        changed = False
-        to_remove = [n for n in H.nodes()
-                     if H.out_degree(n) == 0
-                     and n not in real_taxa
-                     and n != 'seed' and n not in outgroup_set]
-        if to_remove:
-            H.remove_nodes_from(to_remove)
-            changed = True
+    def _is_orphan(n):
+        return (H.out_degree(n) == 0 and n not in real_taxa
+                and n != 'seed' and n not in outgroup_set)
+
+    # Single reverse-topological pass instead of repeat-until-stable. Reversed
+    # topological order visits every node after all of its descendants, so a
+    # parent that is orphaned by removing its last child is still ahead of us
+    # and gets caught in the same pass. Removing nodes never reorders the
+    # survivors, so the order computed up front stays valid.
+    # O(V + E) instead of O(V * depth).
+    try:
+        order = list(nx.topological_sort(H))
+    except nx.NetworkXUnfeasible:
+        order = None
+    if order is not None:
+        to_remove = []
+        for n in reversed(order):
+            if n in H and _is_orphan(n):
+                to_remove.append(n)
+                H.remove_node(n)
+        del to_remove
+    else:
+        changed = True
+        while changed:
+            changed = False
+            to_remove = [n for n in H.nodes() if _is_orphan(n)]
+            if to_remove:
+                H.remove_nodes_from(to_remove)
+                changed = True
     H = contract_degree2_nodes(H)
     return H
 
@@ -100,16 +119,65 @@ def compute_forbidden_edges(T, all_blobs):
 # Global prune pass
 # ---------------------------------------------------------------------------
 
-def _resolvable_size(H, blob):
-    """Sum of direct child subtree sizes at a blob in H."""
+def _subtree_index(H, all_blobs_set=None):
+    """One reverse-topological pass giving, for every node v:
+
+        leafcount[v]  == len(get_leafset(H, v))
+        blob_below[v] == bool((nx.descendants(H, v) | {v}) & all_blobs_set)
+
+    plus the total leaf count of H.
+
+    Why this exists: `get_leafset(net, node)` rebuilds the WHOLE graph's leaf
+    set on every call (the set comprehension over net.nodes runs before `node`
+    is even looked at), so it costs O(n) no matter how small the subtree is.
+    The prune sweep asks for it once per edge, which is what makes the sweep
+    O(n^2). Precomputing both quantities in one pass costs O(V + E) and makes
+    every lookup O(1), so the sweep becomes O(n).
+
+    Returns (leafcount, blob_below, n_leaves_total), or None when H has a node
+    with in-degree > 1 or is not a DAG. Summing child counts is only valid
+    when sibling subtrees are disjoint, so anything that is not a tree/forest
+    falls back to the direct get_leafset() path.
+    """
+    if any(d > 1 for _, d in H.in_degree()):
+        return None
+    try:
+        order = list(nx.topological_sort(H))
+    except nx.NetworkXUnfeasible:
+        return None
+    blobs = all_blobs_set or set()
+    leafcount = {}
+    blob_below = {}
+    n_leaves = 0
+    for v in reversed(order):
+        kids = list(H.successors(v))
+        if not kids:
+            leafcount[v] = 1          # get_leafset(H, v) == {v} for a leaf
+            blob_below[v] = v in blobs
+            n_leaves += 1
+        else:
+            leafcount[v] = sum(leafcount[c] for c in kids)
+            blob_below[v] = (v in blobs) or any(blob_below[c] for c in kids)
+    return leafcount, blob_below, n_leaves
+
+
+def _resolvable_size(H, blob, leafcount=None):
+    """Sum of direct child subtree sizes at a blob in H.
+
+    `leafcount`, when given, is the map from `_subtree_index` and turns each
+    child lookup from O(n) into O(1).
+    """
     if blob not in H:
         return 0
+    if leafcount is not None:
+        return sum(leafcount.get(c, 0) for c in H.successors(blob))
     return sum(len(get_leafset(H, c)) for c in H.successors(blob))
 
 
-def _candidate_cut_edges(H, forbidden_edges, all_blobs_set=None, min_side=3):
+def _candidate_cut_edges(H, forbidden_edges, all_blobs_set=None, min_side=3,
+                         index=None):
     """
-    Return (u, v) edges in H that:
+    Return (u, v, n_leaves_below_v) triples for edges in H that:
       - are not in forbidden_edges,
       - the source u is NOT a blob (any out-edge of a blob in the residual
         tree still encodes the blob's multifurcation and must never be cut),
@@ -118,7 +186,50 @@ def _candidate_cut_edges(H, forbidden_edges, all_blobs_set=None, min_side=3):
       - produce a cut where the subtree below v has >= min_side leaves,
       - and the rest of H has >= min_side leaves.
     "Seed" edges are skipped (cutting the root's synthetic edge is meaningless).
+
+    The third element is the leaf COUNT, not the leaf set. Every filter here
+    and the caller's `max(...)` selection only ever look at the size; the
+    actual leafset is needed for exactly one edge (the winner), which the
+    caller materialises with a single get_leafset() call. Building a set per
+    edge was O(n) per edge and made this sweep O(n^2).
+
+    `index` is the result of `_subtree_index(H, all_blobs_set)`; pass it in to
+    reuse one post-order pass across the stopping test and this sweep. When it
+    is None (or H is not a tree) this falls back to the direct get_leafset()
+    path, which is O(n) per edge but makes no structural assumptions.
     """
+    if index is None:
+        index = _subtree_index(H, all_blobs_set)
+    if index is None:
+        return _candidate_cut_edges_direct(H, forbidden_edges, all_blobs_set,
+                                            min_side)
+    leafcount, blob_below, n_all = index
+    candidates = []
+    for u, v in H.edges():
+        if u == 'seed':
+            continue
+        if (u, v) in forbidden_edges:
+            continue
+        if all_blobs_set is not None and u in all_blobs_set:
+            continue
+        if all_blobs_set is not None and blob_below.get(v, False):
+            # cut would orphan a blob — skip
+            continue
+        lv = leafcount.get(v, 0)
+        if lv < min_side:
+            continue
+        if n_all - lv < min_side:
+            continue
+        candidates.append((u, v, lv))
+    return candidates
+
+
+def _candidate_cut_edges_direct(H, forbidden_edges, all_blobs_set=None,
+                                 min_side=3):
+    """Structure-agnostic fallback for `_candidate_cut_edges` — same result,
+    computed with per-edge get_leafset()/descendants() calls. Used when H is
+    not a tree, where summing child leaf counts would double-count shared
+    descendants."""
     all_leaves = get_leafset(H)
     candidates = []
     for u, v in H.edges():
@@ -128,17 +239,15 @@ def _candidate_cut_edges(H, forbidden_edges, all_blobs_set=None, min_side=3):
             continue
         if all_blobs_set is not None and u in all_blobs_set:
             continue
-        # Subtree below v: include v itself + descendants
         descendants_v = nx.descendants(H, v) | {v}
         if all_blobs_set is not None and descendants_v & all_blobs_set:
-            # cut would orphan a blob — skip
             continue
         leaves_v = get_leafset(H, v)
         if len(leaves_v) < min_side:
             continue
         if len(all_leaves) - len(leaves_v) < min_side:
             continue
-        candidates.append((u, v, leaves_v))
+        candidates.append((u, v, len(leaves_v)))
     return candidates
 
 
@@ -173,14 +282,22 @@ def global_prune_pass(T, forbidden_edges, SIZE, all_blobs, real_taxa=None,
     H = prune_orphan_internals(H, real_taxa, outgroup_set=outgroup_set)
 
     while True:
+        # One post-order pass per iteration, shared by the stopping test and
+        # the candidate sweep below. Both used to call get_leafset() per node
+        # or per edge, and each of those calls rescans the whole graph.
+        index = _subtree_index(H, all_blobs_set)
+        leafcount = index[0] if index is not None else None
+
         # Stop condition: all blobs resolvable size <= SIZE
-        needs_more = [B for B in all_blobs if B in H and _resolvable_size(H, B) > SIZE]
+        needs_more = [B for B in all_blobs
+                      if B in H and _resolvable_size(H, B, leafcount) > SIZE]
         if not needs_more:
             if verbose:
                 print(f"  All blobs <= SIZE; stopping prune pass.")
             break
 
-        cands = _candidate_cut_edges(H, forbidden_edges, all_blobs_set=all_blobs_set)
+        cands = _candidate_cut_edges(H, forbidden_edges,
+                                     all_blobs_set=all_blobs_set, index=index)
         if not cands:
             if verbose:
                 print(f"  No more candidate cut edges (blobs still > SIZE: {needs_more}).")
@@ -188,13 +305,13 @@ def global_prune_pass(T, forbidden_edges, SIZE, all_blobs, real_taxa=None,
 
         # Prefer largest leafset that still fits within SIZE. Fall back to
         # largest overall (will be split later by cut_large_group).
-        fitting = [c for c in cands if len(c[2]) <= SIZE]
+        fitting = [c for c in cands if c[2] <= SIZE]
         if fitting:
-            best = max(fitting, key=lambda c: len(c[2]))
+            best = max(fitting, key=lambda c: c[2])
         else:
-            best = max(cands, key=lambda c: len(c[2]))
+            best = max(cands, key=lambda c: c[2])
 
-        u, v, leaves_v = best
+        u, v, n_leaves_v = best
 
         # Before committing, make sure the cut helps SOMEBODY (i.e. it lies
         # under a blob whose resolvable size currently exceeds SIZE). If no
@@ -209,6 +326,9 @@ def global_prune_pass(T, forbidden_edges, SIZE, all_blobs, real_taxa=None,
                 print(f"  No over-size blob upstream of {(u, v)}; stopping.")
             break
 
+        # Materialise the leafset for the winning edge only — this is the one
+        # place the actual set (not just its size) is needed.
+        leaves_v = get_leafset(H, v)
         pruned[(u, v)] = set(leaves_v)
         # Record cut-time sibling leaves: parent's leafset in current H
         # minus the leaves being cut. Sequential cuts mean earlier cuts

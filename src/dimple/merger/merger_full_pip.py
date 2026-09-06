@@ -78,6 +78,7 @@ from dimple.merger.blob_merger import (
     analyze_blob, write_inputs_file, run_merger,
     _default_gene_trees,
 )
+from dimple.merger.merger_util import compute_dm_full
 from dimple.utils.division_util import (
     load_or_build_tob_subnets as _load_non_blob_tob_subnets,
 )
@@ -92,9 +93,13 @@ def _cpu_now():
 
 
 def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
-                    verbose=True, max_runs=None):
+                    verbose=True, max_runs=None, dm=None):
     """Run DIMPLE merger on one blob; write merged_network.nwk + inputs_full.txt
     + timing.json into blob_out_dir. Returns (status, info_dict).
+
+    `dm` is the whole-dataset gene-tree distance matrix (see
+    `compute_dm_full`), built once by the caller and shared across blobs. Pass
+    None to have each blob build its own the old way.
 
     If max_runs is set, only the first `max_runs` run dirs (sorted by name —
     so run_000, run_001, …) are used."""
@@ -147,7 +152,7 @@ def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
     try:
         _base, merged, n_added, timings = run_merger(
             blob_out_dir, inputs_full, gene_trees, verbose=verbose,
-            source_blob_dir=blob_dir)
+            source_blob_dir=blob_dir, dm=dm)
     except Exception as e:
         import traceback; traceback.print_exc()
         return f'merger_err:{type(e).__name__}', None
@@ -317,6 +322,24 @@ def main():
     pipeline_t0 = time.time(); pipeline_c0 = _cpu_now()
 
     # ------------------------------------------------------------------
+    # Stage 0: shared gene-tree distance matrix
+    # ------------------------------------------------------------------
+    # Built ONCE for the dataset and handed to every blob. compute_dm builds a
+    # full N x N phylogenetic_distance_matrix() per gene tree -- O(G * N^2) --
+    # and each blob only reads the sub-block for its own taxa, so doing it per
+    # blob repeated the same work `len(blobs)` times. Slicing a shared matrix
+    # is exact (see compute_dm_full), so results are unchanged.
+    print(f'\n{"="*70}\n[stage 0] shared gene-tree distance matrix\n{"="*70}',
+          flush=True)
+    t0s = time.time(); c0s = _cpu_now()
+    shared_dm = compute_dm_full(args.gene_trees, verbose=True)
+    stage_timings['stage0_distance_matrix'] = time.time() - t0s
+    stage_timings['stage0_distance_matrix_cpu'] = _cpu_now() - c0s
+    print(f'  {len(shared_dm.index)} taxa, reused by all {len(blobs)} blob(s): '
+          f'wall={stage_timings["stage0_distance_matrix"]:.2f}s '
+          f'cpu={stage_timings["stage0_distance_matrix_cpu"]:.2f}s', flush=True)
+
+    # ------------------------------------------------------------------
     # Stage 1: per-blob inference (DIMPLE merger over phylonet runs)
     # ------------------------------------------------------------------
     print(f'\n{"="*70}\n[stage 1] per-blob DIMPLE merger inference\n{"="*70}',
@@ -347,7 +370,8 @@ def main():
         status, info = per_blob_infer(target_bd, blob_out, args.gene_trees,
                                        f'{args.subgenes_out_dir}/subnets.txt',
                                        verbose=False,
-                                       max_runs=args.max_runs)
+                                       max_runs=args.max_runs,
+                                       dm=shared_dm)
         info = info or {}
         info.update({'blob': blob_name, 'status': status})
         if status == 'ok':
@@ -491,6 +515,8 @@ def main():
     timings_path = os.path.join(out_dir, 'pipeline_timings.json')
     with open(timings_path, 'w') as f:
         json.dump({
+            'stage0_distance_matrix':        stage_timings['stage0_distance_matrix'],
+            'stage0_distance_matrix_cpu':    stage_timings['stage0_distance_matrix_cpu'],
             'stage1_per_blob_inference':     stage_timings['stage1_per_blob_inference'],
             'stage1_per_blob_inference_cpu': stage_timings['stage1_per_blob_inference_cpu'],
             'stage2_build_tob_prunes':       stage_timings['stage2_build_tob_prunes'],
