@@ -168,5 +168,6 @@ def select_displayed_trees(newick_list, gene_tree_file=None, triple_cache=None):
 
 def _get_taxa_quick(newick_str):
     """Quick taxa extraction."""
-    t = dendropy.Tree.get(data=clean_extended_newick(newick_str), schema="newick")
+    t = dendropy.Tree.get(data=clean_extended_newick(newick_str), schema="newick",
+                          preserve_underscores=True)
     return set(l.taxon.label for l in t.leaf_nodes())

@@ -435,7 +435,8 @@ def merge_trees_via_nj(pdm, trees, verbose=False, state_cls=None):
 
     final_label = state.labels[0]
     final_newick = state.subnet[final_label] + ';'
-    final_tree = dendropy.Tree.get(data=final_newick, schema='newick')
+    final_tree = dendropy.Tree.get(data=final_newick, schema='newick',
+                                   preserve_underscores=True)
     state.n_relax = n_relax
     if verbose:
         print(f'  merge_trees_via_nj: relaxed {n_relax} times', flush=True)
@@ -482,7 +483,7 @@ def run_overlap_njmerge(newick_list, dm, outgroup_distances=None,
         all_taxa |= set(l.taxon.label for l in t.leaf_nodes())
         trees.append(t)
 
-    if required_taxa:
+    if required_taxa is not None:
         all_taxa |= {t for t in required_taxa if t and not t.startswith('#')}
 
     # Silently dropping a label that is not in the matrix hides two real

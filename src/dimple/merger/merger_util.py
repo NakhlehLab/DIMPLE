@@ -289,7 +289,8 @@ def identify_unique_reticulations(retics_list):
 
 def _extract_triples_from_dendropy(tree_str, leaf_set):
     """Extract rooted triples (a,b|c) from a newick string, pruned to leaf_set."""
-    tree = dendropy.Tree.get(data=tree_str, schema='newick')
+    tree = dendropy.Tree.get(data=tree_str, schema='newick',
+                             preserve_underscores=True)
     tree.retain_taxa_with_labels(leaf_set)
     tree.suppress_unifurcations()
 
@@ -487,7 +488,11 @@ def get_taxa(newick_str):
 
 def tree_to_newick(t):
     """Serialize a dendropy.Tree to a newick string (strips the dendropy prefix)."""
-    s = t.as_string(schema='newick').strip()
+    # unquoted_underscores: dendropy would otherwise QUOTE any label
+    # containing an underscore ('tax_a'), and DIMPLE's own newick_to_nx
+    # keeps those quotes as part of the label. Writing them bare keeps
+    # the round trip consistent with preserve_underscores=True on read.
+    s = t.as_string(schema='newick', unquoted_underscores=True).strip()
     i = s.find('(')
     return s[i:] if i >= 0 else s
 
