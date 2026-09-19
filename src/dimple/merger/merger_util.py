@@ -4,7 +4,6 @@ overlapNJ / combine-blob modules.
 """
 
 import pickle
-from itertools import combinations
 from collections import Counter
 
 import numpy as np
@@ -297,16 +296,36 @@ def _extract_triples_from_dendropy(tree_str, leaf_set):
     triples = set()
     all_leaves = set(l.taxon.label for l in tree.leaf_node_iter())
 
+    # A triple (a,b|c) is witnessed at node v exactly when a and b lie below v
+    # and c does not; such a v exists iff c lies outside desc(MRCA(a,b)). So
+    # emitting only at v = MRCA(a,b) -- i.e. only for pairs that straddle two
+    # different children of v -- produces the IDENTICAL set with each triple
+    # written exactly once.
+    #
+    # Enumerating all pairs below every v instead re-emits a triple once per
+    # node on the path from MRCA(a,b) up to MRCA(a,b,c): Theta(n^3) on balanced
+    # trees but Theta(n^4) on caterpillars. This form is Theta(n^3) always,
+    # which is optimal -- the output has C(n,3) elements.
     for node in tree.preorder_node_iter():
-        if node.is_leaf() or node.parent_node is None:
+        children = node.child_nodes()
+        if len(children) < 2:
             continue
-        desc = set(l.taxon.label for l in node.leaf_iter())
-        if not (1 < len(desc) < len(all_leaves)):
+        child_leaves = [[l.taxon.label for l in ch.leaf_iter()]
+                        for ch in children]
+        desc = set()
+        for cl in child_leaves:
+            desc.update(cl)
+        if len(desc) < 2 or len(desc) == len(all_leaves):
             continue
         outside = all_leaves - desc
-        for a, b in combinations(sorted(desc), 2):
-            for c in outside:
-                triples.add((a, b, c))
+        for i in range(len(child_leaves)):
+            li = child_leaves[i]
+            for j in range(i + 1, len(child_leaves)):
+                for a in li:
+                    for b in child_leaves[j]:
+                        x, y = (a, b) if a < b else (b, a)
+                        for c in outside:
+                            triples.add((x, y, c))
 
     return triples
 
@@ -316,25 +335,46 @@ def _extract_triples_from_nx(tree):
     all_leaves = set(n for n in tree.nodes if tree.out_degree(n) == 0 and n != 'seed')
     triples = set()
 
-    desc_cache = {}
-    for node in tree.nodes:
-        if tree.out_degree(node) == 0 or node == 'seed':
-            continue
-        if node not in desc_cache:
-            desc = set()
-            for n in nx.descendants(tree, node):
-                if tree.out_degree(n) == 0 and n != 'seed':
-                    desc.add(n)
-            desc_cache[node] = desc
+    # Descendant leaf set of every node in ONE postorder pass. The previous
+    # version called nx.descendants() per node -- O(n) each, O(n^2) overall --
+    # and computed a topological sort it then discarded.
+    try:
+        order = list(nx.topological_sort(tree))
+    except nx.NetworkXUnfeasible:
+        return triples
+    desc_of = {}
+    for v in reversed(order):
+        kids = list(tree.successors(v))
+        if not kids:
+            desc_of[v] = {v} if v in all_leaves else set()
         else:
-            desc = desc_cache[node]
+            s = set()
+            for c in kids:
+                s |= desc_of[c]
+            desc_of[v] = s
 
-        if not (1 < len(desc) < len(all_leaves)):
+    # Emit each triple once, at v = MRCA(a,b) -- the pairs whose MRCA is exactly
+    # v are those straddling two different children of v. Identical output to
+    # the all-pairs-below-v form, without the re-emission that made it O(n^4) on
+    # caterpillars. See the note in _extract_triples_from_dendropy.
+    for v in tree.nodes:
+        if v == 'seed':
+            continue
+        kids = [c for c in tree.successors(v) if desc_of.get(c)]
+        if len(kids) < 2:
+            continue
+        desc = desc_of[v]
+        if len(desc) < 2 or len(desc) == len(all_leaves):
             continue
         outside = all_leaves - desc
-        for a, b in combinations(sorted(desc), 2):
-            for c in outside:
-                triples.add((a, b, c))
+        for i in range(len(kids)):
+            li = desc_of[kids[i]]
+            for j in range(i + 1, len(kids)):
+                for a in li:
+                    for b in desc_of[kids[j]]:
+                        x, y = (a, b) if a < b else (b, a)
+                        for c in outside:
+                            triples.add((x, y, c))
 
     return triples
 

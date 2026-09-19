@@ -44,7 +44,26 @@ def get_displayed_tree_newicks(newick_str):
     return newicks
 
 
-def _score_dt_pl(dt_nwk, shared_taxa, observed_counts):
+def _restricted_counts(keep, observed_counts, cache):
+    """(total, counts_on_keep) for a shared-taxon set, computed once.
+
+    The denominator depends only on `keep`, and every displayed tree of one
+    network has the same leaf set, so all of that network's candidates share
+    this. Scanning the blob's whole triplet dictionary per candidate --
+    re-filtering to the same taxa and re-summing the same denominator -- is
+    what this replaces.
+    """
+    key = frozenset(keep)
+    hit = cache.get(key)
+    if hit is None:
+        sub = {t: c for t, c in observed_counts.items()
+               if t[0] in keep and t[1] in keep and t[2] in keep}
+        hit = (sum(sub.values()), sub)
+        cache[key] = hit
+    return hit
+
+
+def _score_dt_pl(dt_nwk, shared_taxa, observed_counts, keep_cache=None):
     """Score a displayed tree on shared_taxa using PL (triple match).
     Returns fraction NOT matched (lower = better)."""
     G = newick_to_nx(clean_extended_newick(dt_nwk))
@@ -64,16 +83,20 @@ def _score_dt_pl(dt_nwk, shared_taxa, observed_counts):
 
     tree_triples = _extract_triples_from_nx(G)
 
-    matched = 0
-    total = 0
-    for (a, b, c), count in observed_counts.items():
-        if a in keep and b in keep and c in keep:
-            total += count
-            if (a, b, c) in tree_triples:
-                matched += count
-
+    if keep_cache is None:
+        keep_cache = {}
+    total, sub = _restricted_counts(keep, observed_counts, keep_cache)
     if total == 0:
         return 1.0
+
+    # tree_triples is already restricted to `keep`, so look up only those --
+    # at most C(|subnet|,3) entries -- instead of walking the whole blob dict.
+    matched = 0
+    for t in tree_triples:
+        c = sub.get(t)
+        if c:
+            matched += c
+
     return 1.0 - (matched / total)
 
 
@@ -113,11 +136,21 @@ def select_displayed_trees(newick_list, gene_tree_file=None, triple_cache=None):
         all_taxa |= _get_taxa_quick(nwk)
     all_taxa = {t for t in all_taxa if not t.startswith('#')}
 
+    # Nothing to choose between unless some network has more than one
+    # displayed tree; counting gene-tree triples first would be wasted work.
+    if not any(is_net[i] and len(candidates[i]) > 1 for i in range(n)):
+        print("  PL scoring skipped: no network has more than one displayed tree")
+        info = [{'type': 'tree' if not is_net[i] else 'network_1dt',
+                 'selected': 0, 'n_candidates': len(candidates[i])}
+                for i in range(n)]
+        return [candidates[i][0] for i in range(n)], info
+
     if triple_cache and __import__('os').path.exists(triple_cache):
         observed_counts = load_triple_cache(triple_cache, all_taxa)
     else:
         observed_counts = precompute_gene_tree_triples(gene_tree_file, all_taxa)
     print(f"  PL scoring: {len(observed_counts)} triples")
+    keep_cache = {}
 
     # Collect shared taxa between each network and all other inputs
     selected = list(newick_list)
@@ -143,7 +176,8 @@ def select_displayed_trees(newick_list, gene_tree_file=None, triple_cache=None):
         # Score each displayed tree by PL on shared taxa
         dt_scores = []
         for dt_idx, dt_nwk in enumerate(candidates[i]):
-            score = _score_dt_pl(dt_nwk, other_shared, observed_counts)
+            score = _score_dt_pl(dt_nwk, other_shared, observed_counts,
+                                 keep_cache=keep_cache)
             dt_scores.append({'idx': dt_idx, 'score': score, 'type': 'pl'})
 
         dt_scores.sort(key=lambda x: x['score'])
