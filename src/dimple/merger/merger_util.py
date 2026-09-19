@@ -480,7 +480,8 @@ def MPL_score(gene_tree_file, leaf_set, gt_triplets=None,
 
 def get_taxa(newick_str):
     """Extract leaf labels from a newick string (works on extended newick)."""
-    t = dendropy.Tree.get(data=clean_extended_newick(newick_str), schema='newick')
+    t = dendropy.Tree.get(data=clean_extended_newick(newick_str), schema='newick',
+                          preserve_underscores=True)
     return set(l.taxon.label for l in t.leaf_nodes())
 
 
@@ -499,7 +500,8 @@ def compute_dm(gene_trees_file, taxa_set):
     """
     shared_ns = dendropy.TaxonNamespace()
     trees = TreeList.get(data=open(gene_trees_file).read(), schema='newick',
-                         taxon_namespace=shared_ns, rooting='default-rooted')
+                         taxon_namespace=shared_ns, rooting='default-rooted',
+                         preserve_underscores=True)
     labels = sorted(t for t in taxa_set if shared_ns.get_taxon(t))
     tmap = {t.label: t for t in shared_ns}
     n = len(labels)
@@ -536,7 +538,8 @@ def compute_dm_full(gene_trees_file, verbose=False):
     """
     shared_ns = dendropy.TaxonNamespace()
     trees = TreeList.get(data=open(gene_trees_file).read(), schema='newick',
-                         taxon_namespace=shared_ns, rooting='default-rooted')
+                         taxon_namespace=shared_ns, rooting='default-rooted',
+                         preserve_underscores=True)
     labels = sorted(t.label for t in shared_ns)
     idx = {lab: i for i, lab in enumerate(labels)}
     n = len(labels)

@@ -446,8 +446,18 @@ def merge_trees_via_nj(pdm, trees, verbose=False, state_cls=None):
 # High-level wrappers (used by blob_merger)
 # ===========================================================================
 
-def run_overlap_njmerge(newick_list, dm, outgroup_distances=None):
+def run_overlap_njmerge(newick_list, dm, outgroup_distances=None,
+                        required_taxa=None):
     """Clean inputs, add an OUT outgroup taxon, run NJMerge, then reroot.
+
+    required_taxa : iterable[str] or None
+        The blob's COMPLETE taxon set, independent of `newick_list`. The
+        compatibility filter discards whole constraint trees, and a discarded
+        tree can hold taxa that appear in no surviving one; deriving the taxon
+        set from `newick_list` alone then drops those taxa from the backbone
+        even though the distance matrix has them. Pass the full set to keep
+        them. A taxon with no surviving constraint is simply unconstrained in
+        NJ, which is the correct semantics -- no constraint, no restriction.
 
     outgroup_distances : dict[str, float]
         REQUIRED. Per-real-taxon distance to the synthetic OUT outgroup.
@@ -467,11 +477,32 @@ def run_overlap_njmerge(newick_list, dm, outgroup_distances=None):
     trees = []
     all_taxa = set()
     for nwk in newick_list:
-        t = dendropy.Tree.get(data=clean_extended_newick(nwk), schema='newick')
+        t = dendropy.Tree.get(data=clean_extended_newick(nwk), schema='newick',
+                              preserve_underscores=True)
         all_taxa |= set(l.taxon.label for l in t.leaf_nodes())
         trees.append(t)
 
-    avail = [t for t in sorted(all_taxa) if t in dm.index]
+    if required_taxa:
+        all_taxa |= {t for t in required_taxa if t and not t.startswith('#')}
+
+    # Silently dropping a label that is not in the matrix hides two real
+    # failures: a taxon lost to the compatibility filter, and a label that
+    # parsed differently from the one the matrix is keyed on (dendropy
+    # rewrites unquoted underscores to spaces unless preserve_underscores).
+    # Both used to surface far downstream as an AttributeError inside
+    # reroot_at_edge. Fail here instead, naming the labels.
+    absent = sorted(t for t in all_taxa if t not in dm.index)
+    if absent:
+        sample = sorted(dm.index)[:3]
+        raise ValueError(
+            f"{len(absent)} taxon label(s) absent from the distance matrix: "
+            f"{absent[:8]}{'...' if len(absent) > 8 else ''}. The matrix is "
+            f"indexed by {len(dm.index)} labels such as {sample}. If the two "
+            f"differ only by underscores vs spaces, a newick was parsed "
+            f"without preserve_underscores=True."
+        )
+
+    avail = sorted(all_taxa)
     dmat = dm.loc[avail, avail].to_numpy()
     taxa = list(dm.loc[avail, avail].index)
     n = len(taxa)
@@ -491,16 +522,26 @@ def run_overlap_njmerge(newick_list, dm, outgroup_distances=None):
         new_d[i, n] = out_row[i]
         new_d[n, i] = out_row[i]
 
-    out_node = dendropy.Node()
-    out_node.taxon = dendropy.Taxon(label='OUT')
-    trees[0].taxon_namespace.add_taxon(out_node.taxon)
-    old_root = trees[0].seed_node
-    new_root = dendropy.Node()
-    new_root.add_child(old_root)
-    new_root.add_child(out_node)
-    trees[0].seed_node = new_root
-    trees[0].is_rooted = True
-
+    # OUT is carried in the DISTANCE MATRIX only -- it is deliberately NOT
+    # attached to any constraint tree.
+    #
+    # The two rooting signals do different jobs. `outgroup_distances` is soft:
+    # it shifts the Q-matrix so NJ prefers to join OUT toward the TOB-parent
+    # direction, and the data can overrule it. Grafting OUT under
+    # `trees[0].seed_node` was hard: it became a topological constraint
+    # enforced through `violates()` like any other cherry, derived from that
+    # one tree's STORED root. Since the constraint roots are arbitrary (the
+    # stored trees are unifurcating, and `_contract_siblings` leaves one or
+    # two children depending on argument order), that constraint had no
+    # biological justification, and it made the output depend on which
+    # rerooting of an identical unrooted constraint happened to be on disk:
+    #
+    #     ((a,b),(c,d));    ->  ((a,b),(c,d));
+    #     (a,(b,(c,d)));    ->  (a,(b,(c,d)));      same unrooted tree
+    #
+    # OUT is in `pdm` but in no tree's leaf set, so `violates()` never
+    # constrains it and `join()` treats it as a no-op tree-side; it joins
+    # purely on distance. The tree is then rooted on OUT's edge below.
     pdm = matrix_to_dendropy_pdm(new_d, taxa + ['OUT'])
     merged = merge_trees_via_nj(pdm, trees)
     out_nd = merged.find_node_with_taxon_label('OUT')
@@ -516,7 +557,9 @@ def _compat_greedy(newick_list):
     selected_trees = []
     for nwk in newick_list:
         try:
-            candidate = dendropy.Tree.get(data=clean_extended_newick(nwk), schema='newick')
+            candidate = dendropy.Tree.get(data=clean_extended_newick(nwk),
+                                          schema='newick',
+                                          preserve_underscores=True)
         except Exception:
             continue
         conflicts = False
@@ -558,7 +601,8 @@ def select_compatible_subset(newick_list, strategy=None):
     for nwk in newick_list:
         try:
             trees.append(dendropy.Tree.get(
-                data=clean_extended_newick(nwk), schema='newick'))
+                data=clean_extended_newick(nwk), schema='newick',
+                preserve_underscores=True))
         except Exception:
             trees.append(None)
     n = len(trees)

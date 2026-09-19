@@ -39,7 +39,7 @@ import argparse
 from itertools import combinations
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..', '..'))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from dimple.utils.network_util import (
@@ -360,7 +360,8 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
         print(f'  Running NJMerge on {len(compat)} compatible trees...', flush=True)
     t0 = time.time()
     base_nwk = run_overlap_njmerge(compat, dm,
-                                    outgroup_distances=outgroup_distances or None)
+                                    outgroup_distances=outgroup_distances or None,
+                                    required_taxa=all_taxa)
     timings['njmerge'] = time.time() - t0
     with open(os.path.join(blob_dir, 'base_tree.nwk'), 'w') as f:
         f.write(base_nwk + '\n')
