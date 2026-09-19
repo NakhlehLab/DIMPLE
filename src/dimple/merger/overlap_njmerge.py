@@ -117,31 +117,97 @@ def _is_real_leaf(node):
     return node.is_leaf() and node.taxon is not None
 
 
+def _unrooted_adjacency(tree):
+    """Undirected adjacency of `tree` with every internal node of degree <= 2
+    spliced out.
+
+    Neighbor-joining is unrooted and the constraint trees carry no meaningful
+    root: the stored ones are written with a unifurcating seed node, and
+    `_contract_siblings` leaves the seed node with one or two children
+    depending on the order its two labels were passed in. Dropping the
+    parent/child direction makes all of that irrelevant -- the seed node is
+    suppressed like any other degree-2 node, so eligibility depends only on
+    the topology.
+
+    Returns (adj, leaf_labels), adj mapping node -> set of neighbour nodes.
+    """
+    adj = {}
+    leaf_labels = {}
+    for node in tree.preorder_node_iter():
+        adj.setdefault(node, set())
+        if _is_real_leaf(node):
+            leaf_labels[node] = node.taxon.label
+        for c in node.child_node_iter():
+            adj.setdefault(c, set())
+            adj[node].add(c)
+            adj[c].add(node)
+
+    stack = [n for n in adj if n not in leaf_labels]
+    while stack:
+        node = stack.pop()
+        if node not in adj or node in leaf_labels:
+            continue
+        nb = adj[node]
+        if len(nb) == 2:
+            u, v = tuple(nb)
+            adj[u].discard(node)
+            adj[v].discard(node)
+            adj[u].add(v)
+            adj[v].add(u)
+            del adj[node]
+            stack.extend(x for x in (u, v) if x not in leaf_labels)
+        elif len(nb) == 1:
+            (u,) = tuple(nb)
+            adj[u].discard(node)
+            del adj[node]
+            if u not in leaf_labels:
+                stack.append(u)
+        elif len(nb) == 0:
+            del adj[node]
+    return adj, leaf_labels
+
+
 def _build_sibling_pairs(tree, force_unrooted=True):
-    """Return a set of frozenset({a_label, b_label}) for every pair of leaves
-    that are currently siblings in `tree`. With force_unrooted=True, also
-    treat the root's grandchildren as sibling-pair candidates so we don't
-    over-constrain when constraint trees were rooted arbitrarily."""
+    """Return frozenset({a_label, b_label}) for every cherry of `tree`.
+
+    A cherry is two leaves sharing a neighbour in the *unrooted* topology,
+    which is the relation neighbor-joining can act on. force_unrooted=False
+    keeps the strictly rooted reading (siblings share an immediate parent);
+    nothing in the pipeline uses it.
+    """
     pairs = set()
-    for inner in tree.preorder_node_iter():
-        children = inner.child_nodes() if hasattr(inner, 'child_nodes') else list(inner.child_node_iter())
-        leaf_kids = [c for c in children if _is_real_leaf(c)]
-        for i in range(len(leaf_kids)):
-            for j in range(i + 1, len(leaf_kids)):
-                a = leaf_kids[i].taxon.label
-                b = leaf_kids[j].taxon.label
-                pairs.add(frozenset((a, b)))
-    if force_unrooted and tree.seed_node is not None:
-        root = tree.seed_node
-        root_children = list(root.child_node_iter())
-        if len(root_children) == 2:
-            kids0_leaves = [c.taxon.label for c in root_children[0].child_node_iter()
-                            if _is_real_leaf(c)]
-            kids1_leaves = [c.taxon.label for c in root_children[1].child_node_iter()
-                            if _is_real_leaf(c)]
-            for a in kids0_leaves:
-                for b in kids1_leaves:
-                    pairs.add(frozenset((a, b)))
+    if not force_unrooted:
+        for inner in tree.preorder_node_iter():
+            leaf_kids = [c for c in inner.child_node_iter() if _is_real_leaf(c)]
+            for i in range(len(leaf_kids)):
+                for j in range(i + 1, len(leaf_kids)):
+                    pairs.add(frozenset((leaf_kids[i].taxon.label,
+                                         leaf_kids[j].taxon.label)))
+        return pairs
+
+    if tree.seed_node is None:
+        return pairs
+
+    adj, leaf_labels = _unrooted_adjacency(tree)
+
+    # Two labels left: suppression collapses the tree to a single edge between
+    # them. The leaf branch below already emits this pair, but a constraint can
+    # shrink to two labels while the overall merge still has many components,
+    # and joining them must stay permitted -- so make the invariant explicit.
+    if len(leaf_labels) == 2:
+        return {frozenset(leaf_labels.values())}
+
+    for node, nb in adj.items():
+        near = [leaf_labels[x] for x in nb if x in leaf_labels]
+        if node in leaf_labels:
+            # Only on a two-taxon tree, where the two leaves become directly
+            # adjacent once the node between them is suppressed.
+            for lab in near:
+                pairs.add(frozenset((leaf_labels[node], lab)))
+        else:
+            for i in range(len(near)):
+                for j in range(i + 1, len(near)):
+                    pairs.add(frozenset((near[i], near[j])))
     return pairs
 
 
@@ -281,14 +347,21 @@ def _newick_join(left_subnet_nwk, right_subnet_nwk):
     return f'({left_subnet_nwk},{right_subnet_nwk})'
 
 
-def merge_trees_via_nj(pdm, trees, verbose=False):
+class NoValidJoin(RuntimeError):
+    """Raised instead of relaxing, when a state sets fail_on_no_join."""
+
+
+def merge_trees_via_nj(pdm, trees, verbose=False, state_cls=None):
     """Overlap-aware NJ merge of constraint trees.
 
     Strategy: InPhyNet-style sibling-pair lookup; constraint trees mutated in
     place (no deepcopy in the inner loop). If validity fails for all candidate
     pairs at some step, relax constraints and pick the lowest-Q pair.
+
+    state_cls lets a variant supply its own _NJState (e.g. one that adds a
+    between-constraint conflict check). Default behaviour is unchanged.
     """
-    state = _NJState(pdm, trees)
+    state = (state_cls or _NJState)(pdm, trees)
     n = state.n
     n_relax = 0
     join_counter = 0
@@ -309,9 +382,19 @@ def merge_trees_via_nj(pdm, trees, verbose=False):
             if not state.violates(a, b):
                 chosen = (i, j); break
         if chosen is None:
+            if getattr(state, 'fail_on_no_join', False):
+                raise NoValidJoin(
+                    f'no join satisfies the constraints with {n} taxa left')
+            # Relax constraints — pick the lowest-Q pair regardless
             n_relax += 1
             qv, i, j = Q_pairs[0]
             chosen = (i, j)
+            # A state may implement relax_for() to retire only the constraints
+            # that actually blocked this pair, instead of letting join() force
+            # a contraction through every tree. No-op when absent.
+            relax_for = getattr(state, 'relax_for', None)
+            if relax_for is not None:
+                relax_for(state.labels[i], state.labels[j])
 
         i, j = chosen
         a = state.labels[i]; b = state.labels[j]
@@ -353,6 +436,7 @@ def merge_trees_via_nj(pdm, trees, verbose=False):
     final_label = state.labels[0]
     final_newick = state.subnet[final_label] + ';'
     final_tree = dendropy.Tree.get(data=final_newick, schema='newick')
+    state.n_relax = n_relax
     if verbose:
         print(f'  merge_trees_via_nj: relaxed {n_relax} times', flush=True)
     return final_tree
