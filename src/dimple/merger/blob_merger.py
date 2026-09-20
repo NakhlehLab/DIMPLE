@@ -91,14 +91,16 @@ def read_phylonet_subnets(run_dir, subnet_source):
     if not (os.path.exists(meta) and os.path.exists(subnets_file)):
         return []
     with open(subnets_file) as f:
-        lines = [l.strip() for l in f if l.strip()]
+        # [F5] subnet_idx is a PHYSICAL line number: dropping blank lines here
+        # paired every later tree with the previous row's metadata.
+        lines = [l.strip() for l in f]
     out = []
     with open(meta) as f:
         for r in csv.DictReader(f):
             if r.get('type') != 'blob_group':
                 continue
             idx = int(r['subnet_idx'])
-            if idx < len(lines):
+            if idx < len(lines) and lines[idx]:
                 out.append((idx, lines[idx]))
     return out
 
@@ -319,9 +321,14 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
         if verbose:
             print(f'  Computing distance matrix...', flush=True)
         dm = compute_dm(gene_trees, all_taxa | set(sibling_leaves))
-    elif verbose:
-        print(f'  Reusing shared distance matrix ({len(dm.index)} taxa)',
-              flush=True)
+    else:
+        if verbose:
+            print(f'  Reusing shared distance matrix ({len(dm.index)} taxa)', flush=True)
+        # [F8] compute_dm_full leaves NaN where two taxa never share a gene tree.
+        need = [t for t in all_taxa | set(sibling_leaves) if t in dm.index]
+        if dm.loc[need, need].isna().values.any():
+            raise ValueError('this blob needs a distance between taxa that never '
+                             'co-occur in any gene tree')
     outgroup_distances = compute_outgroup_distances(dm, all_taxa, sibling_leaves)
     timings['dm'] = time.time() - t0
 
@@ -334,8 +341,11 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
             print(f'  DT-select: {len(sel)} trees from {len(all_subnets)} subnets',
                   flush=True)
     except Exception as e:
-        if verbose:
-            print(f'  DT-select failed ({e}), using raw tree subnets', flush=True)
+        # [F2] A crash here is not the result "no reticulate input": fail unless
+        # the tree-only fallback was asked for, and always say why.
+        print(f'  DT-select failed ({e})', flush=True)
+        if not os.environ.get('DIMPLE_ALLOW_TREE_FALLBACK') == '1':
+            raise
         sel = [clean_extended_newick(s) for s in all_subnets if '#H' not in s]
     timings['dt_select'] = time.time() - t0
 
@@ -375,9 +385,10 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
         if verbose:
             print(f'  Retics added: {n_added}', flush=True)
     except Exception as e:
-        if verbose:
-            print(f'  add_retics failed: {e} — using base tree as final',
-                  flush=True)
+        # [F2] Otherwise indistinguishable from "no reticulation was accepted".
+        print(f'  add_retics failed: {e}', flush=True)
+        if not os.environ.get('DIMPLE_ALLOW_TREE_FALLBACK') == '1':
+            raise
         final_nwk = base_nwk
         n_added = 0
     timings['retics'] = time.time() - t0

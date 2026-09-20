@@ -29,6 +29,7 @@ import csv
 import json
 import ast
 import argparse
+import re
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
@@ -39,6 +40,22 @@ from dimple.utils.network_util import (
     newick_to_nx, build_newick_from_graph, get_leafset, contract_degree2_nodes,
     clean_extended_newick, extract_subnetwork_by_leaves, strip_branch_lengths,
 )
+
+
+def _clean_keep_gamma(nwk):
+    """[F6] clean_extended_newick, but keeping the inheritance probabilities.
+
+    clean_extended_newick strips '::gamma'; the parser then defaults every hybrid
+    edge to 1, and every exported network carried gamma = 1 and 1.  Its other jobs
+    still matter: newick_to_nx uses an internal label as the node's IDENTITY, so
+    two clades both labelled with support '95' would be merged into one node (and
+    a reticulation between them would vanish).
+    """
+    s = re.sub(r"'\[pp\d=[^]]+\]'", '', nwk)          # ASTRAL-style annotations
+    s = strip_branch_lengths(re.sub(r'\s+', '', s))     # drops lengths, keeps ':0::gamma'
+    return re.sub(r'\)[-+]?\d[0-9.eE+-]*', ')', s)      # numeric support labels
+
+
 from dimple.merger.merger_util import (
     find_root, copy_with_unique_names, smallest_containing,
 )
@@ -55,7 +72,10 @@ def load_pruned_rows(metadata_csv, nwks_file, blob_name, T_orig=None):
     pruned topology so the whole group attaches as one sibling.
     """
     with open(nwks_file) as f:
-        newicks = [l.strip() for l in f if l.strip()]
+        # [F5] subnet_idx is a PHYSICAL line number.  Dropping blank lines (a
+        # missing estimate keeps its slot as an empty line) attached every later
+        # tree under the previous row's taxa and silently lost the last row.
+        newicks = [l.strip() for l in f]
 
     matched_rows = []
     with open(metadata_csv) as f:
@@ -71,7 +91,7 @@ def load_pruned_rows(metadata_csv, nwks_file, blob_name, T_orig=None):
             if not si or si.get('mega_blob') != blob_name:
                 continue
             idx = int(row['subnet_idx'])
-            if idx >= len(newicks):
+            if idx >= len(newicks) or not newicks[idx]:
                 continue
             ce = ast.literal_eval(row['cut_edge']) if row['cut_edge'] else None
             matched_rows.append({
@@ -97,7 +117,7 @@ def load_pruned_rows(metadata_csv, nwks_file, blob_name, T_orig=None):
     for key, rows in groups.items():
         if len(rows) == 1:
             r = rows[0]
-            G = newick_to_nx(clean_extended_newick(r['nwk']))
+            G = newick_to_nx(_clean_keep_gamma(r['nwk']))        # [F6] pruned piece may be a network
             out.append({'idx': r['idx'], 'cut_edge': r['cut_edge'],
                         'source_item': r['source_item'],
                         'leaves': r['leaves'], 'G': G,
@@ -124,7 +144,7 @@ def load_pruned_rows(metadata_csv, nwks_file, blob_name, T_orig=None):
             merged_G.add_node(root)
             merged_G.add_edge('seed', root)
             for i, r in enumerate(rows):
-                g = newick_to_nx(clean_extended_newick(r['nwk']))
+                g = newick_to_nx(_clean_keep_gamma(r['nwk']))    # [F6]
                 if 'seed' in g.nodes:
                     gr_root = list(g.successors('seed'))[0]
                     g.remove_node('seed')
@@ -279,7 +299,7 @@ def add_pruned(blob_nwk, pruned_rows, T_orig=None):
          clade, attach the pruned subtree at the BLOB ROOT (as sibling of the
          entire blob expansion), not at source_item's MRCA inside the blob.
     """
-    G = newick_to_nx(clean_extended_newick(blob_nwk))
+    G = newick_to_nx(_clean_keep_gamma(blob_nwk))                # [F6]
     if 'OUT' in G.nodes:
         G.remove_node('OUT')
         G = contract_degree2_nodes(G)

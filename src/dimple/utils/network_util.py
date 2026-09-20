@@ -439,8 +439,13 @@ def strip_branch_lengths(newick):
     Outputs :0::prob for reticulation edges so that newick_to_nx parses
     the probability into the 'prob' field (not 'support').
     """
+    # ':::prob' (empty length, empty support, prob -- InPhyNet and PhyloNetworks
+    # write this) must be caught FIRST: the ::prob rule below would leave a stray
+    # ':' and produce '::0::prob', a 4-field tag the parser mis-reads, corrupting
+    # every reticulation in the network.
+    s = re.sub(r':::([\d.Ee+\-]+)', r'§§\1', newick)
     # Replace :length::prob with placeholder
-    s = re.sub(r':[0-9Ee+\-\.]+::([\d.Ee+\-]+)', r'§§\1', newick)
+    s = re.sub(r':[0-9Ee+\-\.]+::([\d.Ee+\-]+)', r'§§\1', s)
     # Replace bare ::prob (no branch length before it) with placeholder
     s = re.sub(r'::([\d.Ee+\-]+)', r'§§\1', s)
     # Remove remaining :length

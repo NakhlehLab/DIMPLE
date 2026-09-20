@@ -65,7 +65,8 @@ import argparse
 import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..', '..'))
+# src/dimple/merger -> repo root is three levels up (four pointed at its parent)
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from dimple.utils.network_util import (
@@ -261,6 +262,11 @@ def main():
                     help='iqtree TOB newick (required).')
     ap.add_argument('--gene-trees', required=True,
                     help='Gene trees file (required).')
+    ap.add_argument('--subnet-source', default='subnets.txt',
+                    help="File inside each blob*/run_*/<subgenes-out-dir>/ holding "
+                         "the subnetworks (default: 'subnets.txt', PhyloNet's "
+                         "inferences). The true setting reads the divider's own "
+                         "networks instead, e.g. 'subnetworks_output.txt'.")
     ap.add_argument('--subgenes-out-dir', default='subgenes-out',
                     help="Directory name under each blob*/run_*/ AND under "
                          "non_blob/ that holds 'subnets.txt' (default: "
@@ -279,6 +285,12 @@ def main():
                          'subnets.txt (PhyloNet-inferred prunes).')
     args = ap.parse_args()
 
+    # Stage 3 runs as a subprocess with cwd=PROJECT_ROOT, so a path given relative
+    # to the caller's directory would resolve somewhere else there.
+    for _a in ('divisions_dir', 'metadata_dir', 'tob', 'gene_trees'):
+        if getattr(args, _a):
+            setattr(args, _a, os.path.abspath(getattr(args, _a)))
+
     if not os.path.isdir(args.divisions_dir):
         print(f'ERROR: {args.divisions_dir} not a directory'); sys.exit(1)
     if args.metadata_dir is None:
@@ -289,6 +301,11 @@ def main():
 
     out_dir = os.path.join(args.divisions_dir, args.out_name)
     os.makedirs(out_dir, exist_ok=True)
+    # [F1] A result left by an earlier run must never stand in for this one -- removed
+    # HERE, before any stage, so a failure in stage 1-3 cannot leave it behind either.
+    _stale = os.path.join(out_dir, 'merged_full.nwk')
+    if os.path.exists(_stale):
+        os.remove(_stale)
 
     if not os.path.exists(args.tob):
         print(f'ERROR: TOB not found: {args.tob}'); sys.exit(1)
@@ -368,7 +385,7 @@ def main():
         blob_out = os.path.join(out_dir, bd_name)
         print(f'  ── {bd_name} ({blob_name}) ──', flush=True)
         status, info = per_blob_infer(target_bd, blob_out, args.gene_trees,
-                                       f'{args.subgenes_out_dir}/subnets.txt',
+                                       f'{args.subgenes_out_dir}/{args.subnet_source}',
                                        verbose=False,
                                        max_runs=args.max_runs,
                                        dm=shared_dm)
@@ -483,6 +500,7 @@ def main():
             print(f'WARNING: could not create symlink {link_path}: {e}')
             link_path = None
     final_path = os.path.join(out_dir, 'merged_full.nwk')
+    stage4_error = None
     if link_path:
         ds_dir_for_merge = os.path.dirname(os.path.abspath(args.divisions_dir))
         try:
@@ -493,12 +511,24 @@ def main():
                           metadata_dir=os.path.basename(args.metadata_dir)
                                         if os.path.dirname(os.path.abspath(args.metadata_dir))
                                             == ds_dir_for_merge
-                                        else args.metadata_dir)
+                                        # merge() joins this onto ds_dir as text, so an
+                                        # absolute path would be glued on after it
+                                        else os.path.relpath(args.metadata_dir, ds_dir_for_merge))
         except Exception as e:
             import traceback; traceback.print_exc()
+            stage4_error = e
         if created_link:
             try: os.unlink(link_path)
             except Exception: pass
+    # [F1] Assembly failing (or being skipped for want of the symlink) used to
+    # fall through to the success message below.
+    # A partly written file is non-empty, so the exception decides, not the file.
+    if stage4_error is not None or not (os.path.exists(final_path)
+                                        and os.path.getsize(final_path) > 0):
+        if os.path.exists(final_path):
+            os.remove(final_path)
+        raise SystemExit(f'ERROR: stage 4 (merge_to_tob) failed: {stage4_error!r}; '
+                         f'no {final_path} written')
     stage_timings['stage4_merge_to_tob'] = time.time() - t4
     stage_timings['stage4_merge_to_tob_cpu'] = _cpu_now() - c4
     print(f'  total stage-4 time: wall={stage_timings["stage4_merge_to_tob"]:.2f}s '

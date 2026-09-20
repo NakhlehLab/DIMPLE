@@ -173,6 +173,12 @@ def find_candidate_edges(tree, retic_info, network_taxa, return_exact_flag=False
     # (expected) or minor side (base tree is actually the other DT)?
     target_sibling_leaves = minor_sibling_leaves
     parents = list(tree.predecessors(retic_child))
+    # [F3] Pin the parent the orientation check below looks at.  add_reticulation
+    # used predecessors()[0] afresh each time, but undo_reticulation re-adds that
+    # edge and so moves the parent to the END of networkx's order: when retic_child
+    # is itself a hybrid node, successive trials -- and the accepted insertion --
+    # went above DIFFERENT parents, so the network kept was not the one scored.
+    retic_info['_major_parent'] = parents[0] if parents else None
     if parents and kept_sibling_leaves:
         cur_parent = parents[0]
         cur_siblings = [c for c in tree.successors(cur_parent) if c != retic_child]
@@ -197,6 +203,12 @@ def find_candidate_edges(tree, retic_info, network_taxa, return_exact_flag=False
                        max(len(cur_in_net | minor_sibling_leaves), 1))
             target_sibling_leaves = (minor_sibling_leaves if j_kept >= j_minor
                                      else kept_sibling_leaves)
+
+    # [F4] If the base tree kept the MINOR side, the edge added back is the
+    # MAJOR parent, so the two inheritance probabilities trade places too.
+    # Choosing the other side while keeping the labels scored a network with
+    # gamma and 1-gamma reversed.
+    retic_info['_swap_probs'] = target_sibling_leaves is kept_sibling_leaves
 
     # Exclude edges where v is the retic_child or a descendant (would create cycle).
     descendants = nx.descendants(tree, retic_child)
@@ -259,10 +271,15 @@ def add_reticulation(tree, retic_info, source_edge, retic_counter):
     retic_leaves = retic_info['retic_leaves']
     major_prob = retic_info['major_prob']
     minor_prob = retic_info['minor_prob']
+    if retic_info.get('_swap_probs'):          # [F4] set by find_candidate_edges
+        major_prob, minor_prob = minor_prob, major_prob
 
     # Find the retic child node and its current parent (major parent side)
     retic_child = find_node_for_leaves(tree, retic_leaves)
-    major_parent = list(tree.predecessors(retic_child))[0]
+    preds = list(tree.predecessors(retic_child))
+    major_parent = retic_info.get('_major_parent')          # [F3] set by find_candidate_edges
+    if major_parent not in preds:
+        major_parent = preds[0]
 
     # Create new node names
     retic_node = f'#H{retic_counter}'
@@ -270,19 +287,26 @@ def add_reticulation(tree, retic_info, source_edge, retic_counter):
 
     # 1. Insert minor_parent on edge (u, v)
     #    u → v  becomes  u → minor_p → v
+    # [F3] When v (or retic_child below) is itself a hybrid node, the split edge
+    # carries that node's inheritance probability.  It belongs on the half that
+    # still enters the hybrid; it used to be moved up (here) or dropped (step 2),
+    # and undo then restored the edge without it -- so merely TRYING a candidate
+    # changed the network every later candidate was scored against.
     edge_attrs_uv = dict(tree.edges[u, v])
+    low_uv = {'prob': edge_attrs_uv.pop('prob')} if 'prob' in edge_attrs_uv else {}
     tree.remove_edge(u, v)
     tree.add_node(minor_parent)
     tree.add_edge(u, minor_parent, **edge_attrs_uv)
-    tree.add_edge(minor_parent, v)
+    tree.add_edge(minor_parent, v, **low_uv)
 
     # 2. Insert retic_node on edge (major_parent, retic_child)
     #    major_parent → retic_child  becomes  major_parent → retic_node → retic_child
     edge_attrs_major = dict(tree.edges[major_parent, retic_child])
+    low_major = {'prob': edge_attrs_major.pop('prob')} if 'prob' in edge_attrs_major else {}
     tree.remove_edge(major_parent, retic_child)
     tree.add_node(retic_node)
-    tree.add_edge(major_parent, retic_node, prob=major_prob, **{k: val for k, val in edge_attrs_major.items() if k != 'prob'})
-    tree.add_edge(retic_node, retic_child)
+    tree.add_edge(major_parent, retic_node, prob=major_prob, **edge_attrs_major)
+    tree.add_edge(retic_node, retic_child, **low_major)
 
     # 3. Add minor parent edge: minor_p → retic_node
     tree.add_edge(minor_parent, retic_node, prob=minor_prob)
@@ -306,8 +330,11 @@ def undo_reticulation(tree, retic_node, minor_parent):
     v = [c for c in minor_children if c != retic_node][0]
 
     # Save edge attrs
-    edge_attrs_u_mp = dict(tree.edges[u, minor_parent])
-    edge_attrs_mp_rn = dict(tree.edges[major_parent, retic_node])
+    # upper half + whatever was kept on the lower half [F3]
+    edge_attrs_u_mp = {**tree.edges[u, minor_parent], **tree.edges[minor_parent, v]}
+    edge_attrs_mp_rn = {**{k: val for k, val in tree.edges[major_parent, retic_node].items()
+                           if k != 'prob'},
+                        **tree.edges[retic_node, retic_child]}
 
     # Remove retic_node and minor_parent
     tree.remove_node(retic_node)
@@ -317,7 +344,14 @@ def undo_reticulation(tree, retic_node, minor_parent):
     # u → v (was u → minor_parent → v)
     tree.add_edge(u, v, **edge_attrs_u_mp)
     # major_parent → retic_child (was major_parent → retic_node → retic_child)
-    tree.add_edge(major_parent, retic_child, **{k: val for k, val in edge_attrs_mp_rn.items() if k != 'prob'})
+    tree.add_edge(major_parent, retic_child, **edge_attrs_mp_rn)
+
+
+def _require_finite_base(score):
+    """[F2] Scorers turn every exception into inf, so a non-finite BASE score means
+    the scorer itself is broken -- not that no candidate improved it."""
+    if score != score or score in (float('inf'), float('-inf')):
+        raise RuntimeError(f'PL scorer returned a non-finite base score ({score})')
 
 
 def _collect_and_sort_retics(networks, used_major_list):
@@ -330,10 +364,25 @@ def _collect_and_sort_retics(networks, used_major_list):
     Returns sorted list of (net_idx, network_taxa, retic_info).
     """
     all_retics = []
+    seen = set()
     for net_idx, network in enumerate(networks):
         network_taxa = {n for n in network.nodes() if network.out_degree(n) == 0 and n != 'seed'}
         retics = find_reticulations(network, used_major=used_major_list[net_idx])
         for retic in retics:
+            # [F7] collect_unique_retics returns one representative NETWORK per
+            # event, so a network holding two events arrives twice and each of
+            # its reticulations was scored twice (and could be inserted twice).
+            # Drop only these LITERAL repeats.  Distinct variants that the
+            # dedup grouped as one event are deliberately kept: letting the
+            # score choose among them fits better than the representative alone
+            # (measured: 425037 vs 474022 on data_final 50/high/lvl3more/n031).
+            key = (frozenset(network_taxa), frozenset(retic['retic_leaves']),
+                   frozenset(retic['minor_sibling_leaves']),
+                   frozenset(retic['kept_sibling_leaves']),
+                   retic['major_prob'], retic['minor_prob'])
+            if key in seen:
+                continue
+            seen.add(key)
             all_retics.append((net_idx, network_taxa, retic))
 
     n = len(all_retics)
@@ -442,6 +491,10 @@ def add_retics_greedily(tree, networks, score_fn, used_major_list=None,
     all_retics = _collect_and_sort_retics(networks, used_major_list)
 
     current_score = score_fn(tree)
+    # [F2] Scorers turn every exception into inf.  A non-finite BASE score means
+    # the scorer itself is broken, which would otherwise read as "no candidate
+    # improved the score" and return a tree.
+    _require_finite_base(current_score)
     print(f"  Greedy retic addition: base score={current_score:.6f}, "
           f"{len(all_retics)} candidates, "
           f"redundancy_threshold={redundancy_threshold}", flush=True)
@@ -523,6 +576,8 @@ def add_all_reticulations(tree, networks, score_fn=None, used_major_list=None):
         used_major_list = [True] * len(networks)
 
     all_retics = _collect_and_sort_retics(networks, used_major_list)
+    if score_fn is not None:
+        _require_finite_base(score_fn(tree))       # [F2]
 
     for net_idx, network_taxa, retic in all_retics:
         # Find candidates on the CURRENT tree

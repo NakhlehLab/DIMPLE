@@ -537,6 +537,22 @@ def tree_to_newick(t):
     return s[i:] if i >= 0 else s
 
 
+def _mean_over_observed(S, C, strict=True):
+    """[F8] Mean distance over the trees where the pair actually co-occurs.
+
+    Dividing by the TOTAL tree count shrank every pair that some trees lack, and
+    gave a pair never seen together distance 0 -- "identical" -- which NJ joins
+    first.  With complete taxon coverage C == tree count, so nothing changes.
+    """
+    never = (C == 0) & ~np.eye(len(C), dtype=bool)
+    if never.any() and strict:
+        raise ValueError(f'{int(never.sum()) // 2} taxon pair(s) never co-occur in '
+                         f'any gene tree; their distance is undefined')
+    D = S / np.maximum(C, 1)
+    D[never] = np.nan        # whole-dataset matrix: only a blob that needs the pair fails
+    return D
+
+
 def compute_dm(gene_trees_file, taxa_set):
     """Average pairwise distance matrix across a file of gene trees.
 
@@ -551,6 +567,7 @@ def compute_dm(gene_trees_file, taxa_set):
     tmap = {t.label: t for t in shared_ns}
     n = len(labels)
     S = np.zeros((n, n))
+    C = np.zeros((n, n))      # [F8] trees in which each PAIR was observed
     cnt = 0
     for tree in trees:
         tt = set(l.taxon.label for l in tree.leaf_nodes())
@@ -562,8 +579,9 @@ def compute_dm(gene_trees_file, taxa_set):
                 if b not in tt or i == j:
                     continue
                 S[i, j] += pdm(tmap[a], tmap[b])
+                C[i, j] += 1
         cnt += 1
-    return pd.DataFrame(S / max(cnt, 1), index=labels, columns=labels)
+    return pd.DataFrame(_mean_over_observed(S, C), index=labels, columns=labels)
 
 
 def compute_dm_full(gene_trees_file, verbose=False):
@@ -589,6 +607,7 @@ def compute_dm_full(gene_trees_file, verbose=False):
     idx = {lab: i for i, lab in enumerate(labels)}
     n = len(labels)
     S = np.zeros((n, n))
+    C = np.zeros((n, n))      # [F8]
     cnt = 0
     for tree in trees:
         # Iterate the taxa actually present in this tree rather than testing
@@ -604,8 +623,9 @@ def compute_dm_full(gene_trees_file, verbose=False):
                 if j is None or i == j:
                     continue
                 S[i, j] += pdm(a, b)
+                C[i, j] += 1
         cnt += 1
     if verbose:
         print(f'  Shared DM: {n} taxa from {cnt} gene trees', flush=True)
-    return pd.DataFrame(S / max(cnt, 1), index=labels, columns=labels)
+    return pd.DataFrame(_mean_over_observed(S, C, strict=False), index=labels, columns=labels)
 
