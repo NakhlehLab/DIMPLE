@@ -372,8 +372,12 @@ def find_source_item_for_pruned_subtree(T, origin_mega, cut_edge,
 
 
 # ---------------------------------------------------------------------------
-# Reticulation coverage summary (reused verbatim)
+# Main division pipeline (per-blob folder layout, per-blob k dedup)
 # ---------------------------------------------------------------------------
+
+CSV_FIELDS = ['subnet_idx', 'type', 'blob', 'parent_blob', 'child_blobs',
+              'group', 'cut_edge', 'source_item', 'all_leaves', 'items']
+
 
 def _build_row(subnet_idx, key, leafset, info, allocation_results=None, T=None,
                 cut_siblings=None):

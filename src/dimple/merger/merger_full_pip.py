@@ -284,7 +284,26 @@ def main():
                          'iqtree TOB. "phylonet" uses non_blob/subgenes-out/'
                          'subnets.txt (PhyloNet-inferred prunes).')
     args = ap.parse_args()
+    _run(args)
 
+
+def run_full_merger(divisions_dir, tob, gene_trees, metadata_dir=None,
+                    subgenes_out_dir='subgenes-out', max_runs=None,
+                    out_name='full_merger', prune_source='tob',
+                    subnet_source='subnets.txt'):
+    """Run the merger in-process. Returns the path of the final network.
+
+    Same pipeline as the CLI; used by dimple.run_dimple so the three DIMPLE
+    stages can run under one command.
+    """
+    return _run(argparse.Namespace(
+        divisions_dir=divisions_dir, metadata_dir=metadata_dir, tob=tob,
+        gene_trees=gene_trees, subgenes_out_dir=subgenes_out_dir,
+        max_runs=max_runs, out_name=out_name, prune_source=prune_source,
+        subnet_source=subnet_source))
+
+
+def _run(args):
     # Stage 3 runs as a subprocess with cwd=PROJECT_ROOT, so a path given relative
     # to the caller's directory would resolve somewhere else there.
     for _a in ('divisions_dir', 'metadata_dir', 'tob', 'gene_trees'):
@@ -449,7 +468,7 @@ def main():
                 f'see this. Refusing to continue.')
         out_nwk = os.path.join(combined_dir, f'{blob_name}_combined.nwk')
         print(f'  ── {blob_name} ──', flush=True)
-        cmd = ['conda', 'run', '-n', 'phylo-env', 'python', '-u', '-m',
+        cmd = [sys.executable, '-u', '-m',
                'dimple.merger.add_pruned_subtree',
                '--metadata', nb_meta,
                '--non-blob-nwks', prunes_path,
@@ -457,16 +476,22 @@ def main():
                '--blob-name', blob_name,
                '--tob', args.tob,
                '--out', out_nwk]
-        r = subprocess.run(cmd, cwd=PROJECT_ROOT, text=True)
+        # Run with this checkout's src/ on PYTHONPATH so the child resolves
+        # `dimple` regardless of how the parent was launched.
+        child_env = dict(os.environ)
+        src_dir = os.path.join(PROJECT_ROOT, 'src')
+        child_env['PYTHONPATH'] = (
+            src_dir + os.pathsep + child_env['PYTHONPATH']
+            if child_env.get('PYTHONPATH') else src_dir)
+        r = subprocess.run(cmd, cwd=PROJECT_ROOT, text=True, env=child_env)
         if r.returncode != 0:
             raise SystemExit(
                 f'ERROR: stage 3 (add_pruned_subtree) failed for blob '
                 f'{blob_name} (exit {r.returncode}). Refusing to continue '
                 f'to stage 4 — would produce a multifurcated merged_full.nwk '
                 f'where {blob_name} stays uncombined. Common cause: fork '
-                f'exhaustion under high parallelism (BlockingIOError from '
-                f"`conda run`). Re-run this dataset's merger with lower "
-                f'concurrency.')
+                f'exhaustion under high parallelism. Re-run this dataset\'s '
+                f'merger with lower concurrency.')
     stage_timings['stage3_combine'] = time.time() - t3
     stage_timings['stage3_combine_cpu'] = _cpu_now() - c3
     print(f'  total stage-3 time: wall={stage_timings["stage3_combine"]:.2f}s '
@@ -572,6 +597,7 @@ def main():
 
     print(f'\n{"="*70}\n✓ Done. Final network: {final_path}\n'
           f'Summary: {summary_tsv}', flush=True)
+    return final_path
 
 
 if __name__ == '__main__':
