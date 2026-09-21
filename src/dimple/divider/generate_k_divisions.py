@@ -37,6 +37,9 @@ import argparse
 import ast
 import time
 import resource
+import hashlib
+import tempfile
+from pathlib import Path
 import networkx as nx
 from collections import defaultdict
 
@@ -494,8 +497,85 @@ def _prune_outgroup_from_newick(tob_tree_str, outgroup_leaves):
     return new_str, present, missing
 
 
+DIVISION_STATE_FILE = 'division_inputs.json'
+
+
+def _division_layout(folder):
+    """Record blob/run directories, including unexpected empty directories."""
+    root = Path(folder)
+    blobs = [p for p in root.glob('blob*') if p.is_dir()]
+    return sorted(str(p.relative_to(root)) for p in
+                  blobs + [r for b in blobs for r in b.glob('run_*') if r.is_dir()])
+
+
+def _matching_division_summary(folder, inputs):
+    """Reuse only a complete generation with the same inputs and directory layout."""
+    root = Path(folder)
+    try:
+        state = json.loads((root / DIVISION_STATE_FILE).read_text())
+        if state['inputs'] != inputs or state['layout'] != _division_layout(root):
+            return None
+        for relative_path, digest in state['files'].items():
+            if hashlib.sha256((root / relative_path).read_bytes()).hexdigest() != digest:
+                return None
+        return state['summary']
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def process_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_output",
                                k=15, seed=0, outgroup_leaves=("OUT",)):
+    """Generate a complete division layout, preserving matching inference runs.
+
+    Changed inputs are generated in a fresh directory and published only after
+    successful completion. The previous directory is archived beside it, so
+    obsolete blob/run directories cannot leak into inference or merging.
+    """
+    if SIZE < 1 or k < 1:
+        raise ValueError('subset size and number of division attempts must be positive')
+    output = Path(os.path.abspath(output_dir))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.is_symlink():
+        raise ValueError(f'division output must not be a symlink: {output}')
+    outgroups = list(outgroup_leaves) if outgroup_leaves else []
+    inputs = {'format_version': 1,
+              'tob_sha256': hashlib.sha256(tob_tree_str.encode()).hexdigest(),
+              'size': SIZE, 'k': k, 'seed': seed, 'outgroups': outgroups}
+    summary = _matching_division_summary(output, inputs)
+    if summary is not None:
+        print(f'  Reusing matching divisions in {output}', flush=True)
+        return summary
+
+    with tempfile.TemporaryDirectory(prefix=f'.{output.name}.building-',
+                                     dir=output.parent) as stage_dir:
+        stage = Path(stage_dir)
+        summary = _generate_division_leafsets(
+            tob_tree_str, SIZE=SIZE, output_dir=str(stage), k=k, seed=seed,
+            outgroup_leaves=outgroups)
+        files = {str(p.relative_to(stage)): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in stage.rglob('*') if p.is_file()}
+        (stage / DIVISION_STATE_FILE).write_text(json.dumps({
+            'inputs': inputs, 'summary': summary, 'files': files,
+            'layout': _division_layout(stage)}, indent=2) + '\n')
+        backup = None
+        if output.exists():
+            backup = Path(tempfile.mkdtemp(prefix=f'.{output.name}.previous-',
+                                           dir=output.parent))
+            backup.rmdir()
+            os.replace(output, backup)
+        try:
+            os.replace(stage, output)
+        except BaseException:
+            if backup is not None:
+                os.replace(backup, output)
+            raise
+        if backup is not None:
+            print(f'  Previous divisions archived at {backup}', flush=True)
+    return summary
+
+
+def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_output",
+                                k=15, seed=0, outgroup_leaves=("OUT",)):
     """
     v3 process_division: per-blob output layout.
 

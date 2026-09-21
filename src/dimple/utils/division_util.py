@@ -492,6 +492,8 @@ def isolate_mega_blobs(T, all_blobs, real_taxa=None,
 
     Connected parent-child blobs stay together because, for the child blob,
     its predecessor IS a blob (the parent), so we don't cut.
+    A root blob is also a mega-blob; its artificial seed edge is cut when
+    present, or its component is used directly when the graph has no seed.
 
     Returns:
       cuts:        list of (u, v) edges cut
@@ -507,10 +509,9 @@ def isolate_mega_blobs(T, all_blobs, real_taxa=None,
     for B in all_blobs:
         preds = list(H.predecessors(B))
         if not preds:
+            cut_targets.append(B)
             continue
         parent = preds[0]
-        if parent == 'seed':
-            continue
         if parent in blobs_set:
             continue  # parent-child blobs: don't cut
         cuts.append((parent, B))

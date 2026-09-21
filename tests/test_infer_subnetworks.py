@@ -3,6 +3,8 @@ with the metadata rows, because the merger reads line `subnet_idx`."""
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
+from collections import Counter
 from dimple.phylonet import infer_subnetworks as I
 
 META = ('subnet_idx,type,blob,all_leaves\n'
@@ -139,12 +141,52 @@ def test_same_size_edit_of_an_input_is_not_resumed():
         I.run_phylonet_one = _fake_phylonet(calls)
         assert _run(run) is True
         st = os.stat(run / 'genes.tre')
-        (run / 'genes.tre').write_text(GENES.replace('(d,e)', '(e,d)'))
+        (run / 'genes.tre').write_text(GENES.replace('((t_1,2),c)', '((t_1,c),2)'))
         os.utime(run / 'genes.tre', (st.st_atime, st.st_mtime))
-        I._file_id.cache_clear()
         assert _run(run) is True and len(calls) == 2
     finally:
         I.run_phylonet_one = real
+
+
+def test_changed_starting_tree_invalidates_resume_in_same_process():
+    run, calls = _setup(), []
+    with patch.object(I, 'run_phylonet_one', _fake_phylonet(calls)):
+        assert _run(run) is True
+        base = run / 'base.tre'
+        st = base.stat()
+        base.write_text(BASE.replace('(t_1:1,2:1)0.9:1,c:1',
+                                     '(t_1:1,c:1)0.9:1,2:1'))
+        os.utime(base, (st.st_atime, st.st_mtime))
+        assert _run(run) is True and len(calls) == 2
+        assert '(t_1,c)' in (run / 'subgenes-out/subbase_1_ret1.tree').read_text()
+
+
+def test_changed_jar_invalidates_resume():
+    run, calls = _setup(), []
+    with patch.object(I, 'run_phylonet_one', _fake_phylonet(calls)):
+        assert _run(run) is True
+        (run / 'jar').write_text('a different PhyloNet build')
+        assert _run(run) is True and len(calls) == 2
+        assert _run(run) is True and len(calls) == 2
+
+
+def test_shared_inputs_are_hashed_once_per_invocation():
+    run, calls = _setup(), []
+    for name in ('run_000', 'run_001'):
+        dest = run / 'blob00' / name
+        dest.mkdir(parents=True)
+        (dest / I.METADATA_FILENAME).write_text((run / I.METADATA_FILENAME).read_text())
+    paths = [str(run / f) for f in ('genes.tre', 'base.tre', 'jar')]
+    with patch.object(I, 'run_phylonet_one', _fake_phylonet(calls)), \
+         patch.object(I, '_file_id', wraps=I._file_id) as hashing:
+        assert I.infer_divisions(str(run), *paths, parallel=2) == (2, 0)
+        assert Counter(c.args[0] for c in hashing.call_args_list) == Counter(paths)
+        assert len(calls) == 2
+        hashing.reset_mock()
+        (run / 'jar').write_text('updated JAR')
+        assert I.infer_divisions(str(run), *paths, parallel=2) == (2, 0)
+        assert Counter(c.args[0] for c in hashing.call_args_list) == Counter(paths)
+        assert len(calls) == 4
 
 
 def test_two_taxon_division_keeps_its_gene_trees():

@@ -51,7 +51,6 @@ import csv
 import time
 import json
 import hashlib
-import functools
 import argparse
 import subprocess
 from glob import glob
@@ -326,9 +325,8 @@ def combine_subnets(subgenes_dir, n_rows, divisions, outgroup='OUT'):
 STAMP_FILENAME = 'inputs.json'
 
 
-@functools.lru_cache(maxsize=None)
 def _file_id(path):
-    """Content hash: size + mtime let a same-length edit resume as done."""
+    """Read a fresh content hash, including edits that preserve size and mtime."""
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):
@@ -336,12 +334,17 @@ def _file_id(path):
     return h.hexdigest()
 
 
-def _input_stamp(metadata_csv, gene_trees, base_tree, max_ret, outgroup):
+def _shared_input_ids(gene_trees, base_tree, jar):
+    """Hash shared inputs once per inference invocation, before starting workers."""
+    return {'gene_trees': _file_id(gene_trees), 'base_tree': _file_id(base_tree),
+            'phylonet_jar': _file_id(jar)}
+
+
+def _input_stamp(metadata_csv, input_ids, max_ret, outgroup):
     """What a finished subnets.txt was made from; resume only on an exact match."""
     with open(metadata_csv, 'rb') as f:
         meta_sha = hashlib.sha256(f.read()).hexdigest()
-    return {'metadata_sha256': meta_sha, 'gene_trees': _file_id(gene_trees),
-            'base_tree': _file_id(base_tree), 'max_ret': max_ret,
+    return {'metadata_sha256': meta_sha, **input_ids, 'max_ret': max_ret,
             'outgroup': outgroup}
 
 
@@ -360,7 +363,7 @@ def _read_stamp(path):
 def infer_run(run_dir, gene_trees, base_tree, jar, max_ret=1,
               subgenes_out_dir=DEFAULT_SUBGENES_DIR, outgroup='OUT',
               threads=1, java_mem=DEFAULT_JAVA_MEM, java='java',
-              force=False, label=None):
+              force=False, label=None, *, _input_ids=None):
     """Infer every division in one `run_*` (or `non_blob`) directory."""
     label = label or os.path.basename(run_dir)
     metadata_csv = os.path.join(run_dir, METADATA_FILENAME)
@@ -371,7 +374,9 @@ def infer_run(run_dir, gene_trees, base_tree, jar, max_ret=1,
     subgenes_dir = os.path.join(run_dir, subgenes_out_dir)
     done_marker = os.path.join(subgenes_dir, 'subnets.txt')
     stamp_path = os.path.join(subgenes_dir, STAMP_FILENAME)
-    stamp = _input_stamp(metadata_csv, gene_trees, base_tree, max_ret, outgroup)
+    input_ids = (_shared_input_ids(gene_trees, base_tree, jar)
+                 if _input_ids is None else _input_ids)
+    stamp = _input_stamp(metadata_csv, input_ids, max_ret, outgroup)
     if not force and os.path.isfile(done_marker) and _read_stamp(stamp_path) == stamp:
         print(f'  [{label}] already done, skipping (use --force to redo)',
               flush=True)
@@ -490,12 +495,13 @@ def infer_divisions(divisions_dir, gene_trees, base_tree, jar, max_ret=1,
 
     print(f'PhyloNet stage: {len(jobs)} division directory(ies), '
           f'{parallel} at a time, -pl {threads}', flush=True)
+    input_ids = _shared_input_ids(gene_trees, base_tree, jar)
     n_ok = n_fail = 0
     with ThreadPoolExecutor(max_workers=max(parallel, 1)) as pool:
         futures = {
             pool.submit(infer_run, run_dir, gene_trees, base_tree, jar,
                         max_ret, subgenes_out_dir, outgroup, threads,
-                        java_mem, java, force, label): label
+                        java_mem, java, force, label, _input_ids=input_ids): label
             for label, run_dir in jobs
         }
         for fut in as_completed(futures):

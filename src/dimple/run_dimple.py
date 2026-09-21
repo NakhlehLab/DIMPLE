@@ -47,6 +47,7 @@ import json
 import time
 import shutil
 import argparse
+import tempfile
 
 from dimple.divider.generate_k_divisions import process_division_leafsets
 from dimple.phylonet.infer_subnetworks import (
@@ -55,6 +56,7 @@ from dimple.phylonet.infer_subnetworks import (
 from dimple.merger.merger_full_pip import run_full_merger
 
 FINAL_NETWORK_NAME = 'dimple_network.nwk'
+TIMINGS_NAME = 'dimple_timings.json'
 
 
 def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
@@ -63,12 +65,21 @@ def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
                max_runs=None, prune_source='tob', force=False,
                skip_division=False, skip_inference=False):
     """Run all three DIMPLE stages. Returns the path of the final network."""
+    os.makedirs(out_dir, exist_ok=True)
+    final_path = os.path.join(out_dir, FINAL_NETWORK_NAME)
+    timings_path = os.path.join(out_dir, TIMINGS_NAME)
+    previous = [p for p in (final_path, timings_path) if os.path.lexists(p)]
+    if previous:
+        archive = tempfile.mkdtemp(prefix='.previous-result-', dir=out_dir)
+        for path in previous:
+            os.replace(path, os.path.join(archive, os.path.basename(path)))
+        print(f'  Previous final result archived at {archive}', flush=True)
+
     for path, what in ((gene_trees, 'gene trees'), (tob, 'tree of blobs'),
                        (base_tree, 'base tree'), (phylonet_jar, 'PhyloNet jar')):
         if not os.path.exists(path):
             raise SystemExit(f'ERROR: {what} not found: {path}')
 
-    os.makedirs(out_dir, exist_ok=True)
     divisions_dir = os.path.join(out_dir, 'divisions')
     stage_seconds = {}
 
@@ -129,20 +140,29 @@ def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
     stage_seconds['stage3_merger'] = time.time() - t0
     stage_seconds['total'] = sum(stage_seconds.values())
 
-    if not merged or not os.path.exists(merged):
+    if not merged or not os.path.isfile(merged) or os.path.getsize(merged) == 0:
         raise SystemExit(
             f'ERROR: the merger did not produce a final network '
             f'(expected {merged}).')
-    final_path = os.path.join(out_dir, FINAL_NETWORK_NAME)
-    shutil.copyfile(merged, final_path)
-
-    with open(os.path.join(out_dir, 'dimple_timings.json'), 'w') as f:
-        json.dump({**stage_seconds,
-                   'note': 'wall-clock seconds per DIMPLE stage. Per-stage '
-                           'merger detail is in '
-                           'divisions/full_merger/pipeline_timings.json; '
-                           'per-division PhyloNet times are in each '
-                           'phylonet-runtimelog.txt.'}, f, indent=2)
+    # Publish the network last: a failure copying or serializing results must
+    # not expose a partial file under the advertised final output name.
+    with tempfile.TemporaryDirectory(prefix='.dimple-result-', dir=out_dir) as stage:
+        staged_network = os.path.join(stage, FINAL_NETWORK_NAME)
+        staged_timings = os.path.join(stage, TIMINGS_NAME)
+        shutil.copyfile(merged, staged_network)
+        with open(staged_timings, 'w') as f:
+            json.dump({**stage_seconds,
+                       'note': 'wall-clock seconds per DIMPLE stage. Per-stage '
+                               'merger detail is in '
+                               'divisions/full_merger/pipeline_timings.json; '
+                               'per-division PhyloNet times are in each '
+                               'phylonet-runtimelog.txt.'}, f, indent=2)
+        os.replace(staged_timings, timings_path)
+        try:
+            os.replace(staged_network, final_path)
+        except BaseException:
+            os.remove(timings_path)
+            raise
 
     print(f'\n{"="*70}\n✓ DIMPLE done.\n'
           f'  network  → {final_path}\n'

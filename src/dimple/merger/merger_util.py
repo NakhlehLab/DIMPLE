@@ -434,10 +434,6 @@ def load_triple_cache(cache_path, leaf_set=None):
 # Used by: add_retics_from_inputs.py
 # ---------------------------------------------------------------------------
 
-from phynetpy.MPL import MPL
-from phynetpy.IO import read_newick_file, convert_newick
-from phynetpy.Network import Network
-
 from dimple.utils.network_util import build_newick_from_graph
 
 
@@ -455,6 +451,9 @@ def _nx_to_phynetpy(G, default_branch_length=DEFAULT_BRANCH_LENGTH):
     If any edge has length=None, ALL edge lengths are set to
     default_branch_length before conversion.
     """
+    from phynetpy.IO import convert_newick
+    from phynetpy.Network import Network
+
     has_missing = any(G[u][v].get('length') is None for u, v in G.edges())
     if has_missing:
         G = G.copy()
@@ -472,6 +471,9 @@ def precompute_gt_triplets(gene_tree_file, taxa):
 
     Returns (gt_triplets, mapping).
     """
+    from phynetpy.MPL import MPL
+    from phynetpy.IO import read_newick_file
+
     taxa = sorted(set(taxa))
     mapping = {t: [t] for t in taxa}
 
@@ -497,6 +499,8 @@ def MPL_score(gene_tree_file, leaf_set, gt_triplets=None,
     If gt_triplets is provided (from precompute_gt_triplets), skips the
     expensive triplet computation.
     """
+    from phynetpy.MPL import MPL
+
     if gt_triplets is None:
         gt_triplets, mapping = precompute_gt_triplets(gene_tree_file, leaf_set)
     else:
@@ -628,4 +632,3 @@ def compute_dm_full(gene_trees_file, verbose=False):
     if verbose:
         print(f'  Shared DM: {n} taxa from {cnt} gene trees', flush=True)
     return pd.DataFrame(_mean_over_observed(S, C, strict=False), index=labels, columns=labels)
-
