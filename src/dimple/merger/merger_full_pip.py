@@ -251,9 +251,9 @@ def list_blobs_from_metadata(metadata_dir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('divisions_dir',
-                    help='Directory containing blobXX subdirs with PhyloNet runs '
-                         '(e.g. <ds>/divisions_final_phylonet).')
+    ap.add_argument('divisions_dir', nargs='?', default='dimple_out',
+                    help='Directory written by the divider and the PhyloNet stage '
+                         '(default: dimple_out).')
     ap.add_argument('--metadata-dir', default=None,
                     help='Division metadata folder with cut-time-siblings. '
                          'Defaults to the divisions_dir argument (since the '

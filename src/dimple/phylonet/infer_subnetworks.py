@@ -20,15 +20,17 @@ division listed in that directory's `subnetworks_output_metadata.csv`:
      outgroup back off, and writes one newick per division to
      `<run_dir>/<subgenes-out-dir>/subnets.txt` — the file the merger reads.
 
-Per-division files inside `<run_dir>/<subgenes-out-dir>/`:
-  subgeneset_<i>_ret<r>.txt   restricted gene trees for division i
-  subbase_<i>_ret<r>.tree     restricted starting tree for division i
-  tmp_phylonet_<i>.nex        the NEXUS block handed to PhyloNet
-  phylonet_out_<i>.txt        raw PhyloNet output
-  subnets.txt                 one inferred network per division (outgroup removed)
-  phylonet-runtimelog.txt     per-division wall time + exit status
-  inputs.json                 what subnets.txt was made from; a run is only
-                              skipped as done when this still matches
+Files inside `<run_dir>/<subgenes-out-dir>/`:
+  subset<i>/leaf_subset.txt   the taxa of subset i (metadata row i-1)
+  subset<i>/base_tree.tre     starting tree restricted to the subset, rooted at the outgroup
+  subset<i>/tmp_mpl.nex       the NEXUS handed to PhyloNet in the latest inference of the subset
+  subset<i>/subnet_ret<r>.txt inferred network for bound r, outgroup removed (every bound is kept)
+  subset<i>/mpl_ret<r>.log    raw PhyloNet output for bound r
+  subnets.txt                 line i = the network chosen for subset i (the merger's input)
+  inputs.json                 what every subnet_ret<r>.txt and subnets.txt were made from
+                              (gene trees, base tree, jar, metadata hashes; the bound per
+                              subset); a run is only skipped as done when this still matches
+  mpl_runtimelog.txt          per-subset wall time + status, appended across calls
 
 Divisions coming from the non-blob part of the tree of blobs (metadata rows of
 type `non_blob_set` / `pruned_subtree`) are tree-like by construction and are
@@ -38,11 +40,19 @@ non-blob subnetworks straight off the tree of blobs.
 
 Usage:
     python -m dimple.phylonet.infer_subnetworks \\
-        --divisions dimple_out/divisions \\
-        --gene-trees gene_trees.tre \\
-        --base-tree astral.tre \\
-        --phylonet PhyloNet.jar \\
-        --num-ret 1 --parallel 5 --pl 4
+        --gene-trees gene_trees.tre --base-tree astral.tre \\
+        --phylonet PhyloNet.jar --max-ret 1 --parallel 5 --pl 4
+
+Per-subnetwork reticulation numbers: a division run (blob*/run_*) is one
+partition of a blob into subsets. List them, infer subsets with whatever
+bounds you want to compare (every bound's result is kept), then assemble
+the run's subnets.txt from the bound chosen for each subset.
+    python -m dimple.phylonet.infer_subnetworks ... --list
+    python -m dimple.phylonet.infer_subnetworks ... --only blob00/run_000 --subset 1 --max-ret 2
+    python -m dimple.phylonet.infer_subnetworks ... --only blob00/run_000 --subset 1 --max-ret 1
+    python -m dimple.phylonet.infer_subnetworks ... --only blob00/run_000 --subset 2 --max-ret 0
+    python -m dimple.phylonet.infer_subnetworks ... --only blob00/run_000 --assemble 1,0
+        # subnets.txt from subset 1's max_ret=1 network and subset 2's max_ret=0 network
 """
 import os
 import re
@@ -52,7 +62,10 @@ import time
 import json
 import hashlib
 import argparse
+import fcntl
+import shutil
 import subprocess
+from contextlib import contextmanager
 from glob import glob
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -135,53 +148,58 @@ def _restrict_and_reroot(tree, leaf_set, outgroup, topology_only=False):
     return nwk, sub_t
 
 
-def extract_subgene_trees(gene_trees_path, divisions, out_dir, outgroup='OUT'):
-    """Write subgeneset_<i>_ret<r>.txt for every division."""
-    os.makedirs(out_dir, exist_ok=True)
+def extract_subgene_trees(gene_trees_path, divisions, outgroup='OUT'):
+    """Restrict the gene trees to every subset. Returns {i: (newicks, n_skipped)}."""
     trees = _load_trees(gene_trees_path)
     labels = [{lf.taxon.label for lf in t.leaf_node_iter()} for t in trees]
-    skipped = {}
-    for idx, (leaf_set, retic) in divisions.items():
+    out = {}
+    for idx, (leaf_set, _) in divisions.items():
         wanted = set(leaf_set) | {outgroup}
-        out_path = os.path.join(out_dir, f'subgeneset_{idx}_ret{retic}.txt')
-        skipped[idx] = 0
-        with open(out_path, 'w') as fout:
-            for t, have in zip(trees, labels):
-                # a gene tree may miss taxa, but without the outgroup it cannot
-                # be rooted, and below 2 ingroup taxa it carries no rooted triple
-                if outgroup not in have or len(have & set(leaf_set)) < 2:
-                    skipped[idx] += 1
-                    continue
-                fout.write(_restrict_and_reroot(t, wanted, outgroup)[0] + '\n')
-        if skipped[idx]:
-            print(f'    division {idx}: {skipped[idx]}/{len(trees)} gene trees '
-                  f'skipped (no {outgroup}, or < 2 division taxa)', flush=True)
-    return skipped
+        kept, skipped = [], 0
+        for t, have in zip(trees, labels):
+            # a gene tree may miss taxa, but without the outgroup it cannot
+            # be rooted, and below 2 ingroup taxa it carries no rooted triple
+            if outgroup not in have or len(have & set(leaf_set)) < 2:
+                skipped += 1
+                continue
+            kept.append(_restrict_and_reroot(t, wanted, outgroup)[0])
+        if skipped:
+            print(f'    subset {idx}: {skipped}/{len(trees)} gene trees '
+                  f'skipped (no {outgroup}, or < 2 subset taxa)', flush=True)
+        out[idx] = (kept, skipped)
+    return out
 
 
-def extract_subbase_trees(base_tree_path, divisions, out_dir, outgroup='OUT'):
-    """Write subbase_<i>_ret<r>.tree (the PhyloNet starting tree) per division."""
-    os.makedirs(out_dir, exist_ok=True)
+def subset_dir(subgenes_dir, idx):
+    return os.path.join(subgenes_dir, f'subset{idx}')
+
+
+def extract_subbase_trees(base_tree_path, divisions, subgenes_dir, outgroup='OUT'):
+    """Write subset<i>/base_tree.tre (the PhyloNet starting tree) and
+    subset<i>/leaf_subset.txt for every subset."""
     base_trees = _load_trees(base_tree_path)
     if len(base_trees) == 0:
         raise ValueError(f'No tree found in base tree file {base_tree_path}')
     base_tree = base_trees[0]
     have = {lf.taxon.label for lf in base_tree.leaf_node_iter()}
-    for idx, (leaf_set, retic) in divisions.items():
+    for idx, (leaf_set, _) in divisions.items():
         wanted = set(leaf_set) | {outgroup}
-        out_path = os.path.join(out_dir, f'subbase_{idx}_ret{retic}.tree')
         if wanted - have:
             raise ValueError(
                 f'base tree lacks {sorted(wanted - have)[:5]} needed by '
-                f'division {idx}')
+                f'subset {idx}')
         nwk, sub_t = _restrict_and_reroot(base_tree, wanted, outgroup,
                                           topology_only=True)
         if any(len(nd.child_nodes()) != 2 for nd in sub_t.preorder_internal_node_iter()):
             raise ValueError(
-                f'base tree restricted to division {idx} is not binary; '
+                f'base tree restricted to subset {idx} is not binary; '
                 f'PhyloNet rejects a non-binary start')
-        with open(out_path, 'w') as fout:
+        d = subset_dir(subgenes_dir, idx)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'base_tree.tre'), 'w') as fout:
             fout.write(nwk + '\n')
+        with open(os.path.join(d, 'leaf_subset.txt'), 'w') as fout:
+            fout.write('\n'.join(sorted(leaf_set)) + '\n')
 
 
 # ---------------------------------------------------------------------------
@@ -205,41 +223,24 @@ def write_nexus(gene_trees, start_tree, max_ret, nexus_path, threads=1):
         fout.write('END;\n')
 
 
-def run_phylonet_one(subgene_path, subbase_path, out_path, max_ret, jar,
+def run_phylonet_one(nexus_path, subbase_path, out_path, max_ret, jar,
                      threads=1, java_mem=DEFAULT_JAVA_MEM, java='java'):
-    """Run one InferNetwork_MPL search. Returns True on success."""
+    """Run PhyloNet on an already written NEXUS file, raw output to
+    `out_path`. Returns True when the JVM exits 0."""
     if not os.path.exists(jar):
         raise FileNotFoundError(f'PhyloNet jar not found: {jar}')
     if os.path.exists(out_path):
         os.remove(out_path)
-    if not os.path.exists(subgene_path):
-        print(f'    warning: missing {subgene_path}, skipping', flush=True)
-        return False
-    if not os.path.exists(subbase_path):
-        print(f'    warning: missing {subbase_path}, skipping', flush=True)
-        return False
-
-    with open(subbase_path) as f:
-        start_tree = f.read().strip()
-    with open(subgene_path) as f:
-        gene_trees = [ln.strip() for ln in f if ln.strip()]
-    if len(gene_trees) < 2:
-        print(f'    warning: {os.path.basename(subgene_path)} has only '
-              f'{len(gene_trees)} gene tree(s), skipping', flush=True)
-        return False
-
-    nexus_path = os.path.join(
-        os.path.dirname(out_path),
-        'tmp_' + os.path.basename(out_path).replace('phylonet_out_', 'phylonet_')
-        .replace('.txt', '.nex'))
-    write_nexus(gene_trees, start_tree, max_ret, nexus_path, threads)
-
+    for p, what in ((nexus_path, 'NEXUS'), (subbase_path, 'starting tree')):
+        if not os.path.exists(p):
+            print(f'    warning: missing {what} {p}, skipping', flush=True)
+            return False
     with open(out_path, 'w') as fout:
         proc = subprocess.run([java, f'-Xmx{java_mem}', '-jar', jar, nexus_path],
                               stdout=fout, stderr=subprocess.STDOUT)
     if proc.returncode != 0:
         print(f'    warning: PhyloNet exited {proc.returncode} for '
-              f'{os.path.basename(subgene_path)} (see {out_path})', flush=True)
+              f'{nexus_path} (see {out_path})', flush=True)
         return False
     return True
 
@@ -278,16 +279,37 @@ def remove_outgroup(newick, outgroup='OUT'):
     return build_newick_from_graph(contract_degree2_nodes(G))
 
 
+def _check_leaves(newick, leaf_set, what):
+    got = get_leafset(newick_to_nx(newick))
+    if got != set(leaf_set):
+        raise RuntimeError(
+            f'{what}: network has {len(got)} leaves, the subset has '
+            f'{len(leaf_set)} (differs on {sorted(got ^ set(leaf_set))[:5]})')
+    return newick
+
+
+def _check_inferred(out_path, leaf_set, outgroup='OUT'):
+    """Return the outgroup-pruned network in the raw PhyloNet output
+    `out_path`; RuntimeError if it has no 'Inferred Network #1' or its
+    leaves are not `leaf_set`."""
+    newick = parse_inferred_network(out_path)
+    if newick is None:
+        raise RuntimeError(f'no "Inferred Network #1" in {out_path}: PhyloNet '
+                           f'did not finish this subset')
+    return _check_leaves(remove_outgroup(newick, outgroup), leaf_set,
+                         os.path.basename(out_path))
+
+
 def combine_subnets(subgenes_dir, n_rows, divisions, outgroup='OUT'):
-    """Write subnets.txt from phylonet_out_*.txt. Returns the newick list.
+    """Write subnets.txt from subset<i>/subnet_ret<r>.txt, r taken from
+    `divisions[i]`. Returns the newick list.
 
     One line per metadata row; rows not in `divisions` (too few leaves) are
     written blank so line numbers stay equal to subnet_idx.
 
-    Every division must have produced an inferred network: the merger indexes
-    subnets.txt by division order, so a missing line would silently shift every
-    later division onto the wrong leafset. A gap therefore aborts and leaves no
-    subnets.txt behind.
+    Every subset must have its network: the merger indexes subnets.txt by
+    row, so a missing line would silently shift every later subset onto the
+    wrong leafset. A gap therefore aborts and leaves no subnets.txt behind.
     """
     out_path = os.path.join(subgenes_dir, 'subnets.txt')
     networks = []
@@ -295,26 +317,16 @@ def combine_subnets(subgenes_dir, n_rows, divisions, outgroup='OUT'):
         if idx not in divisions:
             networks.append('')
             continue
-        fpath = os.path.join(subgenes_dir, f'phylonet_out_{idx}.txt')
+        leaves, retic = divisions[idx]
+        fpath = os.path.join(subset_dir(subgenes_dir, idx), f'subnet_ret{retic}.txt')
         if not os.path.exists(fpath):
             raise RuntimeError(
-                f'no PhyloNet output for division {idx} in {subgenes_dir} '
-                f'({os.path.basename(fpath)} missing) — refusing to write a '
-                f'subnets.txt whose lines no longer line up with the divisions')
-        newick = parse_inferred_network(fpath)
-        if newick is None:
-            raise RuntimeError(
-                f'no "Inferred Network #1" in {fpath} — PhyloNet did not '
-                f'finish this division; refusing to write a misaligned '
-                f'subnets.txt')
-        pruned = remove_outgroup(newick, outgroup)
-        got = get_leafset(newick_to_nx(pruned))
-        if got != set(divisions[idx][0]):
-            raise RuntimeError(
-                f'division {idx}: inferred network has {len(got)} leaves, the '
-                f'division has {len(divisions[idx][0])} '
-                f'(differs on {sorted(got ^ set(divisions[idx][0]))[:5]})')
-        networks.append(pruned)
+                f'no network for subset {idx} with max_ret={retic} '
+                f'({fpath} missing); refusing to write a subnets.txt whose '
+                f'lines no longer line up')
+        with open(fpath) as f:
+            nwk = f.read().strip()
+        networks.append(_check_leaves(nwk, leaves, os.path.relpath(fpath, subgenes_dir)))
     with open(out_path + '.tmp', 'w') as fout:
         for nwk in networks:
             fout.write(nwk + '\n')
@@ -340,11 +352,17 @@ def _shared_input_ids(gene_trees, base_tree, jar):
             'phylonet_jar': _file_id(jar)}
 
 
-def _input_stamp(metadata_csv, input_ids, max_ret, outgroup):
-    """What a finished subnets.txt was made from; resume only on an exact match."""
+def _metadata_sha(metadata_csv):
     with open(metadata_csv, 'rb') as f:
-        meta_sha = hashlib.sha256(f.read()).hexdigest()
-    return {'metadata_sha256': meta_sha, **input_ids, 'max_ret': max_ret,
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def _input_stamp(meta_sha, input_ids, bounds, outgroup):
+    """What a finished subnets.txt was made from; resume only on an exact match.
+    `bounds` maps subset index -> reticulation bound, so a run assembled
+    from per-subset inferences with different bounds is recorded as such."""
+    return {'metadata_sha256': meta_sha, **input_ids,
+            'max_ret': {str(i): r for i, r in sorted(bounds.items())},
             'outgroup': outgroup}
 
 
@@ -356,6 +374,66 @@ def _read_stamp(path):
         return None
 
 
+@contextmanager
+def _locked(subgenes_dir):
+    """Serialise read-modify-write of inputs.json across invocations that
+    work on the same run at the same time (e.g. per-subset cluster jobs)."""
+    os.makedirs(subgenes_dir, exist_ok=True)
+    with open(os.path.join(subgenes_dir, STAMP_FILENAME + '.lock'), 'w') as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
+def _load_inputs(subgenes_dir):
+    """inputs.json: {'results': {subset: {bound: inputs the network came from}},
+    'assembled': what subnets.txt was made from (absent until assembled)}."""
+    d = _read_stamp(os.path.join(subgenes_dir, STAMP_FILENAME))
+    return d if isinstance(d, dict) and 'results' in d else {'results': {}}
+
+
+def _save_inputs(subgenes_dir, d):
+    with open(os.path.join(subgenes_dir, STAMP_FILENAME), 'w') as f:
+        json.dump(d, f, indent=1)
+
+
+def _stamps(subgenes_dir, idx):
+    """{bound: inputs subset<idx>/subnet_ret<bound>.txt came from}."""
+    return _load_inputs(subgenes_dir)['results'].get(str(idx), {})
+
+
+def _record_result(subgenes_dir, idx, retic, stamp):
+    with _locked(subgenes_dir):
+        d = _load_inputs(subgenes_dir)
+        d['results'].setdefault(str(idx), {})[str(retic)] = stamp
+        _save_inputs(subgenes_dir, d)
+
+
+def _forget_result(subgenes_dir, idx, retic):
+    with _locked(subgenes_dir):
+        d = _load_inputs(subgenes_dir)
+        d['results'].get(str(idx), {}).pop(str(retic), None)
+        _save_inputs(subgenes_dir, d)
+
+
+def _inferred_bounds(subgenes_dir, idx, current):
+    """{bound: True if made from the current inputs else False} for one subset."""
+    d = subset_dir(subgenes_dir, idx)
+    return {int(r): st == current for r, st in _stamps(subgenes_dir, idx).items()
+            if os.path.isfile(os.path.join(d, f'subnet_ret{r}.txt'))}
+
+
+def _drop_result(subgenes_dir, idx, retic):
+    """Remove one (subset, bound) result and its stamp."""
+    d = subset_dir(subgenes_dir, idx)
+    for f in (f'subnet_ret{retic}.txt', f'mpl_ret{retic}.log'):
+        if os.path.exists(os.path.join(d, f)):
+            os.remove(os.path.join(d, f))
+    _forget_result(subgenes_dir, idx, retic)
+
+
 # ---------------------------------------------------------------------------
 # Driving one run directory / a whole divisions tree
 # ---------------------------------------------------------------------------
@@ -363,8 +441,19 @@ def _read_stamp(path):
 def infer_run(run_dir, gene_trees, base_tree, jar, max_ret=1,
               subgenes_out_dir=DEFAULT_SUBGENES_DIR, outgroup='OUT',
               threads=1, java_mem=DEFAULT_JAVA_MEM, java='java',
-              force=False, label=None, *, _input_ids=None):
-    """Infer every division in one `run_*` (or `non_blob`) directory."""
+              force=False, label=None, only=None, assemble=None, *,
+              _input_ids=None):
+    """Infer the subsets of one division run (`blob*/run_*` or `non_blob`).
+
+    only=None, assemble=None: infer every subset with `max_ret` from a clean
+        output directory and write subnets.txt.
+    only={i, ...}: infer just those subsets (1-based, see --list) with
+        `max_ret`. Results of other subsets and other bounds are kept, and
+        subnets.txt is NOT written: assemble it with the bounds you choose.
+    assemble={i: r, ...}: run no PhyloNet; write subnets.txt from the existing
+        subset<i>/subnet_ret<r>.txt of every subset, refusing results made
+        from other inputs.
+    """
     label = label or os.path.basename(run_dir)
     metadata_csv = os.path.join(run_dir, METADATA_FILENAME)
     if not os.path.exists(metadata_csv):
@@ -376,71 +465,148 @@ def infer_run(run_dir, gene_trees, base_tree, jar, max_ret=1,
     stamp_path = os.path.join(subgenes_dir, STAMP_FILENAME)
     input_ids = (_shared_input_ids(gene_trees, base_tree, jar)
                  if _input_ids is None else _input_ids)
-    stamp = _input_stamp(metadata_csv, input_ids, max_ret, outgroup)
-    if not force and os.path.isfile(done_marker) and _read_stamp(stamp_path) == stamp:
-        print(f'  [{label}] already done, skipping (use --force to redo)',
-              flush=True)
+    meta_sha = _metadata_sha(metadata_csv)
+    current = {'metadata_sha256': meta_sha, **input_ids, 'outgroup': outgroup}
+
+    n_rows, divisions = read_division_leafsets(metadata_csv, max_ret if max_ret is not None else 1)
+    if not divisions:
+        print(f'  [{label}] no usable subsets in metadata, skipping', flush=True)
+        return False
+    os.makedirs(subgenes_dir, exist_ok=True)
+
+    def _assemble(bounds, note):
+        """subnets.txt from subset<i>/subnet_ret<bounds[i]>.txt for every subset."""
+        problems = []
+        for i in divisions:
+            have = _inferred_bounds(subgenes_dir, i, current)
+            if bounds[i] not in have:
+                problems.append(f'subset {i}: no result for max_ret={bounds[i]}'
+                                f' (have {sorted(r for r in have if have[r]) or "none"})')
+            elif not have[bounds[i]]:
+                problems.append(f'subset {i}: result for max_ret={bounds[i]} was made '
+                                f'from other inputs (STALE); re-infer it')
+        if problems:
+            note('not assembled: ' + '; '.join(problems))
+            print(f'  [{label}] subnets.txt not written:\n    ' + '\n    '.join(problems), flush=True)
+            return False
+        networks = combine_subnets(
+            subgenes_dir, n_rows, {i: (ls, bounds[i]) for i, (ls, _) in divisions.items()}, outgroup)
+        with _locked(subgenes_dir):
+            d = _load_inputs(subgenes_dir)
+            d['assembled'] = _input_stamp(meta_sha, input_ids, bounds, outgroup)
+            _save_inputs(subgenes_dir, d)
+        note(f'wrote {len(networks)} lines to subnets.txt (bounds {bounds})')
+        print(f'  [{label}] wrote {len(divisions)} network(s) to {done_marker} '
+              f'with bounds {bounds}', flush=True)
         return True
 
-    n_rows, divisions = read_division_leafsets(metadata_csv, max_ret)
-    if not divisions:
-        print(f'  [{label}] no usable divisions in metadata, skipping',
+    if assemble is not None:
+        unknown = sorted(set(assemble) - set(divisions))
+        if unknown:
+            raise SystemExit(f'ERROR: [{label}] no inferable subset {unknown}; '
+                             f'this run has {sorted(divisions)} (see --list)')
+        with open(os.path.join(subgenes_dir, 'mpl_runtimelog.txt'), 'a') as log:
+            return _assemble(dict(assemble), lambda m: (log.write(m + '\n'), log.flush()))
+
+    if only is None:
+        selected = divisions
+        stamp = _input_stamp(meta_sha, input_ids,
+                             {i: r for i, (_, r) in divisions.items()}, outgroup)
+        if (not force and os.path.isfile(done_marker)
+                and _load_inputs(subgenes_dir).get('assembled') == stamp):
+            print(f'  [{label}] already done, skipping (use --force to redo)',
+                  flush=True)
+            return True
+        # Start clean: nothing from an earlier run (other inputs, other
+        # bounds) may be picked up by the assembly below.
+        for f in (done_marker, done_marker + '.tmp', stamp_path):
+            if os.path.exists(f):
+                os.remove(f)
+        for d in glob(os.path.join(subgenes_dir, 'subset*')):
+            if os.path.isdir(d):
+                shutil.rmtree(d)
+    else:
+        unknown = sorted(set(only) - set(divisions))
+        if unknown:
+            raise SystemExit(f'ERROR: [{label}] no inferable subset {unknown}; '
+                             f'this run has {sorted(divisions)} (see --list)')
+        selected = {i: divisions[i] for i in sorted(only)}
+        if not force:
+            for i in list(selected):
+                if _inferred_bounds(subgenes_dir, i, current).get(selected[i][1]):
+                    print(f'  [{label}] subset {i} already inferred with '
+                          f'max_ret={selected[i][1]}, skipping (use --force to redo)',
+                          flush=True)
+                    del selected[i]
+        for i, (_, r) in selected.items():          # only this (subset, bound)
+            if os.path.isdir(subset_dir(subgenes_dir, i)):
+                _drop_result(subgenes_dir, i, r)
+
+    if only is None or selected:
+        print(f'  [{label}] {len(selected)} subset(s) to infer, max_ret={max_ret}',
               flush=True)
-        return False
-
-    # Start clean: nothing from an earlier run (other inputs, other divisions)
-    # may be picked up by the collection step below.
-    os.makedirs(subgenes_dir, exist_ok=True)
-    for pat in ('subnets.txt', 'subnets.txt.tmp', STAMP_FILENAME,
-                'phylonet_out_*.txt', 'subgeneset_*.txt', 'subbase_*.tree',
-                'tmp_phylonet_*.nex'):
-        for f in glob(os.path.join(subgenes_dir, pat)):
-            os.remove(f)
-
-    print(f'  [{label}] {len(divisions)} division(s), max_ret={max_ret}',
-          flush=True)
-    with open(os.path.join(subgenes_dir, 'phylonet-runtimelog.txt'), 'w') as log:
+    with open(os.path.join(subgenes_dir, 'mpl_runtimelog.txt'),
+              'w' if only is None else 'a') as log:
         def note(msg):
             log.write(msg + '\n')
             log.flush()
-        note(f'{label}: {len(divisions)} division(s), max_ret={max_ret}')
-        t_extract = time.time()
-        skipped = extract_subgene_trees(gene_trees, divisions, subgenes_dir, outgroup)
-        extract_subbase_trees(base_tree, divisions, subgenes_dir, outgroup)
-        note(f'extract: {time.time() - t_extract:.2f}s')
+        note(f'{label}: {len(selected)} subset(s), max_ret={max_ret}')
+        gts = {}
+        if selected:
+            t_extract = time.time()
+            gts = extract_subgene_trees(gene_trees, selected, outgroup)
+            extract_subbase_trees(base_tree, selected, subgenes_dir, outgroup)
+            note(f'extract: {time.time() - t_extract:.2f}s')
 
         failed = []
-        for idx, (leaf_set, retic) in divisions.items():
-            subgene = os.path.join(subgenes_dir, f'subgeneset_{idx}_ret{retic}.txt')
-            subbase = os.path.join(subgenes_dir, f'subbase_{idx}_ret{retic}.tree')
-            out_path = os.path.join(subgenes_dir, f'phylonet_out_{idx}.txt')
+        for idx, (leaf_set, retic) in selected.items():
+            d = subset_dir(subgenes_dir, idx)
+            trees, skipped = gts[idx]
+            # PhyloNet reads a NEXUS private to this invocation, so a second
+            # invocation on the same subset (another bound, in parallel) cannot
+            # swap it under the JVM; it is kept as tmp_mpl.nex afterwards.
+            nexus = os.path.join(d, f'tmp_mpl.{os.getpid()}.nex')
+            subbase = os.path.join(d, 'base_tree.tre')
+            raw = os.path.join(d, f'mpl_ret{retic}.log')
             t0 = time.time()
-            ok = run_phylonet_one(subgene, subbase, out_path, retic, jar,
-                                  threads=threads, java_mem=java_mem, java=java)
+            ok = len(trees) >= 2
+            if not ok:
+                print(f'    subset {idx}: only {len(trees)} usable gene tree(s)', flush=True)
+            else:
+                with open(subbase) as f:
+                    write_nexus(trees, f.read().strip(), retic, nexus, threads)
+                ok = run_phylonet_one(nexus, subbase, raw, retic, jar,
+                                      threads=threads, java_mem=java_mem, java=java)
+                os.replace(nexus, os.path.join(d, 'tmp_mpl.nex'))
+            if ok:
+                # only a parseable network on exactly the subset's taxa counts
+                # as done; otherwise every later retry would skip it
+                try:
+                    pruned = _check_inferred(raw, leaf_set, outgroup)
+                    with open(os.path.join(d, f'subnet_ret{retic}.txt'), 'w') as f:
+                        f.write(pruned + '\n')
+                    _record_result(subgenes_dir, idx, retic, current)
+                except RuntimeError as e:
+                    print(f'    {e}', flush=True)
+                    ok = False
             elapsed = time.time() - t0
             if not ok:
                 failed.append(idx)
-            note(f'division {idx}: {len(leaf_set)} taxa, r={retic}, '
-                 f'{skipped[idx]} gene trees skipped, {elapsed:.2f}s, '
+            note(f'subset {idx}: {len(leaf_set)} taxa, r={retic}, '
+                 f'{skipped} gene trees skipped, {elapsed:.2f}s, '
                  f'{"ok" if ok else "FAILED"}')
-            print(f'    division {idx} (row {idx - 1}): {len(leaf_set)} taxa, '
+            print(f'    subset {idx} (row {idx - 1}): {len(leaf_set)} taxa, '
                   f'r={retic}, {elapsed:.1f}s'
                   f'{"" if ok else "  [FAILED]"}', flush=True)
-
-        try:
-            if failed:
-                raise RuntimeError(f'PhyloNet failed on division(s) {failed}')
-            networks = combine_subnets(subgenes_dir, n_rows, divisions, outgroup)
-        except RuntimeError as e:
-            note(f'combine FAILED: {e}')
-            print(f'  [{label}] ERROR: {e}', flush=True)
+        if failed:
+            note(f'FAILED on subset(s) {failed}')
+            print(f'  [{label}] ERROR: PhyloNet failed on subset(s) {failed}', flush=True)
             return False
-        with open(stamp_path, 'w') as f:
-            json.dump(stamp, f, indent=1)
-        note(f'wrote {len(networks)} lines to subnets.txt')
-    print(f'  [{label}] wrote {len(divisions)} network(s) to '
-          f'{os.path.join(subgenes_dir, "subnets.txt")}', flush=True)
-    return True
+        if only is not None:
+            print(f'  [{label}] done; choose the bounds and run --assemble to '
+                  f'write subnets.txt', flush=True)
+            return True
+        return _assemble({i: r for i, (_, r) in divisions.items()}, note)
 
 
 def list_run_dirs(divisions_dir, include_non_blob=False):
@@ -464,8 +630,17 @@ def infer_divisions(divisions_dir, gene_trees, base_tree, jar, max_ret=1,
                     subgenes_out_dir=DEFAULT_SUBGENES_DIR, outgroup='OUT',
                     parallel=1, threads=1, java_mem=DEFAULT_JAVA_MEM,
                     java='java', include_non_blob=False, force=False,
-                    max_runs=None):
-    """Infer every division under `divisions_dir`. Returns (n_ok, n_failed)."""
+                    max_runs=None, only_runs=None, only_divisions=None,
+                    list_only=False, assemble=None):
+    """Infer every division under `divisions_dir`. Returns (n_ok, n_failed).
+
+    `only_runs` restricts to division runs by label ('blob00/run_001');
+    `only_divisions` (1-based subset indices, see `list_only`) restricts to
+    subsets within them, inferred with `max_ret` and assembled with what the
+    other subsets already have. `assemble` = [bound of subset 1, of subset 2,
+    ...] runs no PhyloNet and writes subnets.txt from those results; it needs
+    exactly one run dir (`only_runs`).
+    """
     for path, what in ((divisions_dir, 'divisions dir'),
                        (gene_trees, 'gene trees'),
                        (base_tree, 'base tree'),
@@ -492,16 +667,64 @@ def infer_divisions(divisions_dir, gene_trees, base_tree, jar, max_ret=1,
         raise SystemExit(
             f'ERROR: no blob*/run_*/ directories under {divisions_dir}. '
             f'Run dimple.divider.generate_k_divisions first.')
+    if only_runs:
+        known = {label for label, _ in jobs}
+        bad = sorted(set(only_runs) - known)
+        if bad:
+            raise SystemExit(f'ERROR: unknown run dir(s) {bad}; known: {sorted(known)}')
+        jobs = [(label, d) for label, d in jobs if label in only_runs]
+    if list_only:
+        input_ids = _shared_input_ids(gene_trees, base_tree, jar)
+        print(f'{"run":18s} {"subset":>6s} {"taxa":>5s}  status')
+        for label, run_dir in jobs:
+            meta = os.path.join(run_dir, METADATA_FILENAME)
+            n_rows, divisions = read_division_leafsets(meta, max_ret)
+            sub = os.path.join(run_dir, subgenes_out_dir)
+            current = {'metadata_sha256': _metadata_sha(meta), **input_ids, 'outgroup': outgroup}
+            for i, (leaves, _) in divisions.items():
+                have = _inferred_bounds(sub, i, current)
+                good = sorted(r for r in have if have[r]); stale = sorted(r for r in have if not have[r])
+                status = ('inferred max_ret=' + ','.join(map(str, good)) if good else 'not inferred') + \
+                         (f'  STALE max_ret={",".join(map(str, stale))} (inputs changed)' if stale else '')
+                print(f'{label:18s} {i:6d} {len(leaves):5d}  {status}   '
+                      f'{",".join(sorted(leaves)[:6])}{",..." if len(leaves) > 6 else ""}')
+            st = _load_inputs(sub).get('assembled')
+            print(f'{label:18s}  subnets.txt: ' + (
+                f'present, bounds {st["max_ret"]}' if st and os.path.isfile(os.path.join(sub, 'subnets.txt'))
+                else 'absent'))
+        return 0, 0
+    if assemble is not None:
+        if only_divisions:
+            raise SystemExit('ERROR: --assemble lists the bound of every subset; it takes no --subset')
+        if len(jobs) != 1:
+            raise SystemExit('ERROR: --assemble needs exactly one division run; add '
+                             f'--only <run> (candidates: {[l for l, _ in jobs]})')
+    if only_divisions and len(jobs) != 1:
+        raise SystemExit('ERROR: --subset needs exactly one division run; add '
+                         f'--only <run> (candidates: {[l for l, _ in jobs]})')
 
-    print(f'PhyloNet stage: {len(jobs)} division directory(ies), '
+    print(f'PhyloNet stage: {len(jobs)} division run(s), '
           f'{parallel} at a time, -pl {threads}', flush=True)
     input_ids = _shared_input_ids(gene_trees, base_tree, jar)
+
+    def _bounds_for(run_dir):
+        """--assemble: the listed bounds mapped onto this run's subsets, or exit."""
+        _, divisions = read_division_leafsets(os.path.join(run_dir, METADATA_FILENAME), 0)
+        if len(assemble) != len(divisions):
+            raise SystemExit(f'ERROR: --assemble lists {len(assemble)} bound(s) but '
+                             f'{run_dir} has {len(divisions)} subsets '
+                             f'({sorted(divisions)}; see --list)')
+        return dict(zip(sorted(divisions), assemble))
+
     n_ok = n_fail = 0
     with ThreadPoolExecutor(max_workers=max(parallel, 1)) as pool:
         futures = {
             pool.submit(infer_run, run_dir, gene_trees, base_tree, jar,
                         max_ret, subgenes_out_dir, outgroup, threads,
-                        java_mem, java, force, label, _input_ids=input_ids): label
+                        java_mem, java, force, label,
+                        set(only_divisions) if only_divisions else None,
+                        _bounds_for(run_dir) if assemble is not None else None,
+                        _input_ids=input_ids): label
             for label, run_dir in jobs
         }
         for fut in as_completed(futures):
@@ -523,9 +746,9 @@ def main():
     ap = argparse.ArgumentParser(
         description='Infer a network per division with PhyloNet '
                     '(stage 2 of DIMPLE).')
-    ap.add_argument('--divisions', required=True,
-                    help='Divisions directory written by '
-                         'dimple.divider.generate_k_divisions.')
+    ap.add_argument('dir', nargs='?', default='dimple_out',
+                    help='Directory written by dimple.divider.generate_k_divisions '
+                         '(default: dimple_out).')
     ap.add_argument('--gene-trees', required=True,
                     help='Gene trees, one newick per line, including the '
                          'outgroup leaf.')
@@ -538,7 +761,7 @@ def main():
     ap.add_argument('--phylonet', required=True, help='Path to PhyloNet.jar.')
     ap.add_argument('--max-ret', '--num-ret', dest='max_ret', type=int, default=1,
                     help='Reticulation bound handed to InferNetwork_MPL for '
-                         'each division (default: 1).')
+                         'each subset (default: 1).')
     ap.add_argument('--subgenes-out-dir', default=DEFAULT_SUBGENES_DIR,
                     help='Output subdirectory name inside each run dir '
                          f'(default: {DEFAULT_SUBGENES_DIR}). Use a distinct '
@@ -563,15 +786,46 @@ def main():
                          'subnetworks off the tree of blobs.')
     ap.add_argument('--force', action='store_true',
                     help='Re-infer run dirs that already have subnets.txt.')
+    ap.add_argument('--only', metavar='RUN', action='append', default=None,
+                    help="Only this run dir, e.g. 'blob00/run_001' "
+                         '(repeatable, or comma-separated).')
+    ap.add_argument('--subset', metavar='N', action='append', default=None,
+                    help='Only this subset of the --only division run (1-based '
+                         'index as printed by --list; repeatable or '
+                         'comma-separated). It is inferred with --max-ret and '
+                         'assembled with the subsets already inferred, so one '
+                         'call per subset sets a per-subnetwork bound.')
+    ap.add_argument('--list', action='store_true',
+                    help='List every division run and its subsets, with what '
+                         'is inferred so far, then exit.')
+    ap.add_argument('--assemble', metavar='R1,R2,...', default=None,
+                    help='Run no PhyloNet: write subnets.txt of the --only run '
+                         'from the results already inferred, taking for subset '
+                         '1 its max_ret=R1 network, for subset 2 its max_ret=R2 '
+                         'network, and so on (one number per subset, in --list '
+                         'order). This is where the number of reticulations per '
+                         'subnetwork is decided.')
     args = ap.parse_args()
+    split = lambda xs: [v.strip() for x in (xs or []) for v in x.split(',') if v.strip()]
+    only_runs = split(args.only) or None
+    try:
+        only_divisions = [int(v) for v in split(args.subset)] or None
+        assemble = ([int(v) for v in split([args.assemble])]
+                    if args.assemble is not None else None)
+    except ValueError:
+        ap.error('--subset and --assemble take integers')
+    if assemble is not None and not assemble:
+        ap.error('--assemble needs one bound per subset, e.g. --assemble 1,0,2')
 
     n_ok, n_fail = infer_divisions(
-        args.divisions, args.gene_trees, args.base_tree, args.phylonet,
+        args.dir, args.gene_trees, args.base_tree, args.phylonet,
         max_ret=args.max_ret, subgenes_out_dir=args.subgenes_out_dir,
         outgroup=args.outgroup, parallel=args.parallel, threads=args.pl,
         java_mem=args.java_mem, java=args.java,
         include_non_blob=args.include_non_blob, force=args.force,
-        max_runs=args.max_runs)
+        max_runs=args.max_runs, only_runs=only_runs,
+        only_divisions=only_divisions, list_only=args.list,
+        assemble=assemble)
     sys.exit(1 if n_fail else 0)
 
 

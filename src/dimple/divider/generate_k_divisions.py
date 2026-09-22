@@ -951,7 +951,8 @@ if __name__ == "__main__":
         description='Generate k divisions (v3, leafset-only — no GT network required)')
     parser.add_argument('--tob', type=str, required=True,
                         help='Path to TOB tree newick (rerooted with the outgroup as root).')
-    parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--output_dir', type=str, default='dimple_out',
+                        help='Where to write the division runs (default: dimple_out).')
     parser.add_argument('--size', type=int, default=12)
     parser.add_argument('--k', type=int, default=15)
     parser.add_argument('--seed', type=int, default=0)

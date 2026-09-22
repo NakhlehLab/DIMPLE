@@ -125,7 +125,7 @@ def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
                 f'ERROR: PhyloNet inference failed for {n_fail} division '
                 f'directory(ies). The merger would silently drop or misalign '
                 f'those subnetworks, so DIMPLE stops here. See the '
-                f'phylonet-runtimelog.txt files under {divisions_dir}.')
+                f'mpl_runtimelog.txt files under {divisions_dir}.')
     stage_seconds['stage2_phylonet'] = time.time() - t0
 
     # ------------------------------------------------------------------
@@ -156,7 +156,7 @@ def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
                                'merger detail is in '
                                'divisions/full_merger/pipeline_timings.json; '
                                'per-division PhyloNet times are in each '
-                               'phylonet-runtimelog.txt.'}, f, indent=2)
+                               'mpl_runtimelog.txt.'}, f, indent=2)
         os.replace(staged_timings, timings_path)
         try:
             os.replace(staged_network, final_path)
