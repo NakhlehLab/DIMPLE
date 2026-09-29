@@ -138,6 +138,52 @@ def find_node_for_leaves(tree, target_leaves):
     return best_node
 
 
+def choose_inserted_side(tree, retic_info, network_taxa, leafset=None):
+    """Sibling taxa of the parental relationship that must be INSERTED.
+
+    The backbone already holds one of the source reticulation's two parental
+    relationships; the edge added back is the other one. That is the source's MINOR
+    side in the usual case, but the KEPT (major) side whenever the backbone retained
+    the minor parent -- displayed-tree selection chooses per reticulation, so either
+    can happen.
+
+    Decided from the backbone: compare the hybrid clade's current sibling taxa,
+    projected onto this source network's taxa, with the two sibling sets. Subset
+    evidence first, then the better overlap, and the source's minor side when there is
+    nothing to go on. Returns one of the two ORIGINAL set objects, so callers can test
+    identity to learn which side it is.
+
+    One implementation, used by both callers: find_candidate_edges (which also derives
+    the inheritance-probability orientation from it) and the dependency sort in
+    _collect_and_sort_retics (which needs the inserted side, not the minor side).
+    """
+    _leaves = leafset or get_leafset
+    minor_sibling_leaves = retic_info['minor_sibling_leaves']
+    kept_sibling_leaves = retic_info.get('kept_sibling_leaves', set())
+    retic_child = find_node_for_leaves(tree, retic_info['retic_leaves'])
+    if retic_child is None:
+        return minor_sibling_leaves
+    parents = list(tree.predecessors(retic_child))
+    if not (parents and kept_sibling_leaves):
+        return minor_sibling_leaves
+    cur_sib_leaves = set()
+    for s in tree.successors(parents[0]):
+        if s != retic_child:
+            cur_sib_leaves |= set(_leaves(tree, s))
+    cur_in_net = cur_sib_leaves & network_taxa
+    if not cur_in_net:
+        return minor_sibling_leaves
+    if cur_in_net <= minor_sibling_leaves and not cur_in_net <= kept_sibling_leaves:
+        return kept_sibling_leaves      # backbone kept the MINOR side
+    if cur_in_net <= kept_sibling_leaves and not cur_in_net <= minor_sibling_leaves:
+        return minor_sibling_leaves     # standard orientation
+    j_kept = (len(cur_in_net & kept_sibling_leaves) /
+              max(len(cur_in_net | kept_sibling_leaves), 1))
+    j_minor = (len(cur_in_net & minor_sibling_leaves) /
+               max(len(cur_in_net | minor_sibling_leaves), 1))
+    return minor_sibling_leaves if j_kept >= j_minor else kept_sibling_leaves
+
+
 def find_candidate_edges(tree, retic_info, network_taxa, return_exact_flag=False):
     """
     Find all edges in the merged tree where the added (reticulation) edge
@@ -169,45 +215,20 @@ def find_candidate_edges(tree, retic_info, network_taxa, return_exact_flag=False
     if retic_child is None:
         return ([], False) if return_exact_flag else []
 
-    # Orientation check: does retic_child's current sibling match kept side
-    # (expected) or minor side (base tree is actually the other DT)?
-    target_sibling_leaves = minor_sibling_leaves
-    parents = list(tree.predecessors(retic_child))
-    # [F3] Pin the parent the orientation check below looks at.  add_reticulation
-    # used predecessors()[0] afresh each time, but undo_reticulation re-adds that
-    # edge and so moves the parent to the END of networkx's order: when retic_child
-    # is itself a hybrid node, successive trials -- and the accepted insertion --
-    # went above DIFFERENT parents, so the network kept was not the one scored.
-    retic_info['_major_parent'] = parents[0] if parents else None
-    if parents and kept_sibling_leaves:
-        cur_parent = parents[0]
-        cur_siblings = [c for c in tree.successors(cur_parent) if c != retic_child]
-        cur_sib_leaves = set()
-        for s in cur_siblings:
-            cur_sib_leaves |= get_leafset(tree, s)
-        cur_in_net = cur_sib_leaves & network_taxa
-        # Exact match first; fall back to best-overlap side
-        if cur_in_net and cur_in_net <= minor_sibling_leaves and not (
-                cur_in_net <= kept_sibling_leaves):
-            # Base tree kept the MINOR side — swap: add the MAJOR/kept side back
-            target_sibling_leaves = kept_sibling_leaves
-        elif cur_in_net and cur_in_net <= kept_sibling_leaves and not (
-                cur_in_net <= minor_sibling_leaves):
-            # Standard orientation — add back minor side
-            target_sibling_leaves = minor_sibling_leaves
-        elif cur_in_net:
-            # Ambiguous: pick the side with higher Jaccard overlap to sibling
-            j_kept = (len(cur_in_net & kept_sibling_leaves) /
-                      max(len(cur_in_net | kept_sibling_leaves), 1))
-            j_minor = (len(cur_in_net & minor_sibling_leaves) /
-                       max(len(cur_in_net | minor_sibling_leaves), 1))
-            target_sibling_leaves = (minor_sibling_leaves if j_kept >= j_minor
-                                     else kept_sibling_leaves)
+    # Which side is inserted (the one the backbone does NOT already hold)
+    target_sibling_leaves = choose_inserted_side(tree, retic_info, network_taxa)
 
-    # [F4] If the base tree kept the MINOR side, the edge added back is the
-    # MAJOR parent, so the two inheritance probabilities trade places too.
-    # Choosing the other side while keeping the labels scored a network with
-    # gamma and 1-gamma reversed.
+    # [F3] Pin the parent the insertion goes above.  add_reticulation used
+    # predecessors()[0] afresh each time, but undo_reticulation re-adds that edge and so
+    # moves the parent to the END of networkx's order: when retic_child is itself a hybrid
+    # node, successive trials -- and the accepted insertion -- went above DIFFERENT
+    # parents, so the network kept was not the one scored.
+    _parents = list(tree.predecessors(retic_child))
+    retic_info['_major_parent'] = _parents[0] if _parents else None
+
+    # [F4] The two inheritance probabilities are labelled by the SOURCE network's
+    # major/minor. When the backbone kept the MINOR side, the relationship inserted is the
+    # major one, so the probabilities trade places; add_reticulation reads this flag.
     retic_info['_swap_probs'] = target_sibling_leaves is kept_sibling_leaves
 
     # Exclude edges where v is the retic_child or a descendant (would create cycle).
@@ -354,12 +375,61 @@ def _require_finite_base(score):
         raise RuntimeError(f'PL scorer returned a non-finite base score ({score})')
 
 
-def _collect_and_sort_retics(networks, used_major_list):
+def _sort_retics(all_retics, tree=None):
+    """Dependency order for a list of (net_idx, network_taxa, retic).
+
+    If retic A's child leaves fall in the sibling taxa of the side B will
+    INSERT, A must come first: A creates the cluster B's placement needs. The
+    inserted side is read off `tree`, so call this again on the CURRENT tree
+    after an insertion -- accepting one reticulation can change another's
+    orientation, and an order fixed on the starting backbone then goes stale.
+    """
+    n = len(all_retics)
+    insert_side = [
+        (choose_inserted_side(tree, r, taxa) if tree is not None
+         else r['minor_sibling_leaves'])
+        for _, taxa, r in all_retics]
+    deps = [set() for _ in range(n)]
+    for i in range(n):
+        child_i = all_retics[i][2]['retic_leaves']
+        for j in range(n):
+            if i == j:
+                continue
+            sibling_j = insert_side[j]
+            if child_i & sibling_j:
+                deps[j].add(i)
+
+    in_deg = [len(d) for d in deps]
+    queue = [i for i in range(n) if in_deg[i] == 0]
+    order = []
+    while queue:
+        idx = queue.pop(0)
+        order.append(idx)
+        for j in range(n):
+            if idx in deps[j]:
+                deps[j].discard(idx)
+                in_deg[j] -= 1
+                if in_deg[j] == 0:
+                    queue.append(j)
+    for i in range(n):
+        if i not in order:
+            order.append(i)
+
+    return [all_retics[i] for i in order]
+
+
+def _collect_and_sort_retics(networks, used_major_list, tree=None):
     """
     Collect all reticulations from each network, then sort in dependency order.
 
-    Dependency: if retic A's child leaves appear in retic B's minor sibling
-    leaves, A must be added before B (A creates the cluster B's placement needs).
+    Dependency: if retic A's child leaves appear in the sibling taxa of the side
+    that B will INSERT, A must be added before B (A creates the cluster B's placement
+    needs). The inserted side is the one the backbone does not already hold, which is
+    B's minor side only when the backbone kept its major parent, so the rule asks
+    choose_inserted_side rather than reading minor_sibling_leaves. The order is fixed
+    up front and so is evaluated on the backbone as it stands before any insertion;
+    placement and the inheritance probabilities are decided again, per reticulation, at
+    insertion time. Without a backbone (tree=None) it falls back to the minor side.
 
     Returns sorted list of (net_idx, network_taxa, retic_info).
     """
@@ -385,34 +455,7 @@ def _collect_and_sort_retics(networks, used_major_list):
             seen.add(key)
             all_retics.append((net_idx, network_taxa, retic))
 
-    n = len(all_retics)
-    deps = [set() for _ in range(n)]
-    for i in range(n):
-        child_i = all_retics[i][2]['retic_leaves']
-        for j in range(n):
-            if i == j:
-                continue
-            sibling_j = all_retics[j][2]['minor_sibling_leaves']
-            if child_i & sibling_j:
-                deps[j].add(i)
-
-    in_deg = [len(d) for d in deps]
-    queue = [i for i in range(n) if in_deg[i] == 0]
-    order = []
-    while queue:
-        idx = queue.pop(0)
-        order.append(idx)
-        for j in range(n):
-            if idx in deps[j]:
-                deps[j].discard(idx)
-                in_deg[j] -= 1
-                if in_deg[j] == 0:
-                    queue.append(j)
-    for i in range(n):
-        if i not in order:
-            order.append(i)
-
-    return [all_retics[i] for i in order]
+    return _sort_retics(all_retics, tree=tree)
 
 
 def _edge_distance(tree, node_a, node_b, max_dist=3):
@@ -502,7 +545,9 @@ def add_retics_greedily(tree, networks, score_fn, used_major_list=None,
     added = []
     n_skipped = 0
 
-    for net_idx, network_taxa, retic in all_retics:
+    pending = list(all_retics)
+    while pending:
+        net_idx, network_taxa, retic = pending.pop(0)
         candidates = find_candidate_edges(tree, retic, network_taxa)
         if not candidates:
             print(f"  Network {net_idx+1}, {retic['retic_node']}: "
@@ -545,6 +590,10 @@ def add_retics_greedily(tree, networks, score_fn, used_major_list=None,
             print(f"    Probs: major={retic['major_prob']:.4f}, "
                   f"minor={retic['minor_prob']:.4f}", flush=True)
             added.append((net_idx, rn, retic))
+            # The tree changed, so a later reticulation may now insert its other
+            # side: redo the dependency order for what is left (codex review).
+            if pending:
+                pending = _sort_retics(pending, tree=tree)
             retic_counter += 1
             current_score = best_score
         else:
