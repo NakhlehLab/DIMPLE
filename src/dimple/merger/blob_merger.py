@@ -36,7 +36,6 @@ import csv
 import json
 import time
 import argparse
-from itertools import combinations
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
@@ -204,40 +203,6 @@ def analyze_blob(blob_dir, subnet_source):
             groups[matched]['runs'].add(run_name)
 
     return runs, run_subnets, groups
-
-
-def select_covering_runs(runs, groups):
-    """Pick the smallest set of runs that covers all unique retics. Ties
-    are broken by preferring earlier-ordered runs. Returns the list of
-    selected run names (ordered). If groups is empty, returns [runs[0]]
-    (tree-only blob — just use the first run)."""
-    if not groups:
-        return runs[:1]
-
-    n_retics = len(groups)
-    run_coverage = {}  # run -> set of group indices covered
-    for run in runs:
-        covered = {gi for gi, g in enumerate(groups) if run in g['runs']}
-        if covered:
-            run_coverage[run] = covered
-    if not run_coverage:
-        return []
-
-    all_retics = set(range(n_retics))
-    candidate_runs = list(run_coverage.keys())
-
-    # Exhaustive over k=1,2,...; exit as soon as a k-subset covers all.
-    for k in range(1, len(candidate_runs) + 1):
-        for combo in combinations(candidate_runs, k):
-            union_cov = set()
-            for run in combo:
-                union_cov |= run_coverage[run]
-            if union_cov >= all_retics:
-                return list(combo)
-
-    # Fallback: couldn't fully cover — return the single best run
-    best = max(candidate_runs, key=lambda r: len(run_coverage[r]))
-    return [best]
 
 
 # ---------------------------------------------------------------------------
