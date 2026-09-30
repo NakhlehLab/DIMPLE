@@ -254,14 +254,12 @@ def global_prune_pass(T, forbidden_edges, SIZE, all_blobs, real_taxa=None,
                       verbose=True, outgroup_set=frozenset({'OUT'})):
     """
     Global greedy pruning. Cuts subtrees outside forbidden edges, largest first,
-    preferring candidates whose leafset fits within SIZE.
+    always the largest candidate whose leafset fits within SIZE.
 
     Stops when every remaining blob's resolvable_size <= SIZE.
 
     Returns:
-        pruned_subtrees: dict[(u, v) -> set(leaves)]   (each <= SIZE; larger
-            residual subtrees remain on the residual tree for the caller to
-            split via cut_large_group if needed).
+        pruned_subtrees: dict[(u, v) -> set(leaves)], each of size <= SIZE.
         T_residual: nx.DiGraph with cut edges removed and degree-2 nodes
             suppressed. Blob nodes retain all their direct out-edges.
         cut_siblings: dict[(u, v) -> set(leaves)]
@@ -302,13 +300,15 @@ def global_prune_pass(T, forbidden_edges, SIZE, all_blobs, real_taxa=None,
                 print(f"  No more candidate cut edges (blobs still > SIZE: {needs_more}).")
             break
 
-        # Prefer largest leafset that still fits within SIZE. Fall back to
-        # largest overall (will be split later by cut_large_group).
+        # The largest candidate whose leafset fits within SIZE. For SIZE >= 4
+        # one always exists when any candidate does: only blob out-edges are
+        # forbidden and non-blob nodes are binary, so a candidate with more
+        # than SIZE leaves contains one with between SIZE/2 and SIZE leaves.
         fitting = [c for c in cands if c[2] <= SIZE]
-        if fitting:
-            best = max(fitting, key=lambda c: c[2])
-        else:
-            best = max(cands, key=lambda c: c[2])
+        if not fitting:
+            raise RuntimeError(
+                f'no candidate cut fits within SIZE={SIZE}: {cands}')
+        best = max(fitting, key=lambda c: c[2])
 
         u, v, n_leaves_v = best
 

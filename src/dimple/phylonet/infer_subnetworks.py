@@ -3,7 +3,7 @@
 Stage 2 of DIMPLE: infer a network for every division with PhyloNet.
 
 Given a divisions directory produced by `dimple.divider.generate_k_divisions`,
-this walks every `blob*/run_*/` (and optionally `non_blob/`) and, for each
+this walks every `blob*/run_*/` and, for each
 division listed in that directory's `subnetworks_output_metadata.csv`:
 
   1. Restricts the gene trees to the division's leafset (plus the outgroup)
@@ -32,11 +32,9 @@ Files inside `<run_dir>/<subgenes-out-dir>/`:
                               subset); a run is only skipped as done when this still matches
   mpl_runtimelog.txt          per-subset wall time + status, appended across calls
 
-Divisions coming from the non-blob part of the tree of blobs (metadata rows of
-type `non_blob_set` / `pruned_subtree`) are tree-like by construction and are
-inferred with the reticulation bound fixed to 0. They are skipped entirely
-unless `--include-non-blob` is given, because the default merger takes its
-non-blob subnetworks straight off the tree of blobs.
+Divisions coming from the non-blob part of the tree of blobs (`non_blob/`,
+metadata rows of type `non_blob_set` / `pruned_subtree`) are never inferred:
+the merger takes them straight off the tree of blobs.
 
 Usage:
     python -m dimple.phylonet.infer_subnetworks \\
@@ -79,7 +77,6 @@ from dimple.utils.network_util import (
 )
 
 METADATA_FILENAME = 'subnetworks_output_metadata.csv'
-TREE_LIKE_ROW_TYPES = ('non_blob_set', 'pruned_subtree')
 DEFAULT_SUBGENES_DIR = 'subgenes-out'
 DEFAULT_JAVA_MEM = '16000M'
 
@@ -113,9 +110,7 @@ def read_division_leafsets(metadata_csv, max_ret):
                       if t.strip()]
             if len(leaves) < 2:
                 continue
-            row_type = (row.get('type') or '').strip()
-            r = 0 if row_type in TREE_LIKE_ROW_TYPES else max_ret
-            info[pos + 1] = (set(leaves), r)
+            info[pos + 1] = (set(leaves), max_ret)
     return n_rows, info
 
 
@@ -443,7 +438,7 @@ def infer_run(run_dir, gene_trees, base_tree, jar, max_ret=1,
               threads=1, java_mem=DEFAULT_JAVA_MEM, java='java',
               force=False, label=None, only=None, assemble=None, *,
               _input_ids=None):
-    """Infer the subsets of one division run (`blob*/run_*` or `non_blob`).
+    """Infer the subsets of one division run (`blob*/run_*`).
 
     only=None, assemble=None: infer every subset with `max_ret` from a clean
         output directory and write subnets.txt.
@@ -609,7 +604,7 @@ def infer_run(run_dir, gene_trees, base_tree, jar, max_ret=1,
         return _assemble({i: r for i, (_, r) in divisions.items()}, note)
 
 
-def list_run_dirs(divisions_dir, include_non_blob=False):
+def list_run_dirs(divisions_dir):
     """Return [(label, run_dir)] for every division directory to infer."""
     jobs = []
     for blob_dir in sorted(d for d in glob(os.path.join(divisions_dir, 'blob*'))
@@ -619,17 +614,13 @@ def list_run_dirs(divisions_dir, include_non_blob=False):
                       if os.path.isdir(d))
         for run_dir in runs:
             jobs.append((f'{blob}/{os.path.basename(run_dir)}', run_dir))
-    if include_non_blob:
-        nb = os.path.join(divisions_dir, 'non_blob')
-        if os.path.isfile(os.path.join(nb, METADATA_FILENAME)):
-            jobs.append(('non_blob', nb))
     return jobs
 
 
 def infer_divisions(divisions_dir, gene_trees, base_tree, jar, max_ret=1,
                     subgenes_out_dir=DEFAULT_SUBGENES_DIR, outgroup='OUT',
                     parallel=1, threads=1, java_mem=DEFAULT_JAVA_MEM,
-                    java='java', include_non_blob=False, force=False,
+                    java='java', force=False,
                     max_runs=None, only_runs=None, only_divisions=None,
                     list_only=False, assemble=None):
     """Infer every division under `divisions_dir`. Returns (n_ok, n_failed).
@@ -654,13 +645,13 @@ def infer_divisions(divisions_dir, gene_trees, base_tree, jar, max_ret=1,
         raise SystemExit(f'ERROR: --subgenes-out-dir must be a plain directory '
                          f'name, not a path: {subgenes_out_dir!r}')
 
-    jobs = list_run_dirs(divisions_dir, include_non_blob)
+    jobs = list_run_dirs(divisions_dir)
     if max_runs is not None and max_runs > 0:
         keep, seen = [], {}
         for label, run_dir in jobs:
             blob = label.split('/')[0]
             seen[blob] = seen.get(blob, 0) + 1
-            if blob == 'non_blob' or seen[blob] <= max_runs:
+            if seen[blob] <= max_runs:
                 keep.append((label, run_dir))
         jobs = keep
     if not jobs:
@@ -780,10 +771,6 @@ def main():
     ap.add_argument('--java', default='java', help='Java executable.')
     ap.add_argument('--java-mem', default=DEFAULT_JAVA_MEM,
                     help=f'-Xmx for PhyloNet (default: {DEFAULT_JAVA_MEM}).')
-    ap.add_argument('--include-non-blob', action='store_true',
-                    help='Also infer the non_blob divisions. Not needed for '
-                         'the default merger, which reads its non-blob '
-                         'subnetworks off the tree of blobs.')
     ap.add_argument('--force', action='store_true',
                     help='Re-infer run dirs that already have subnets.txt.')
     ap.add_argument('--only', metavar='RUN', action='append', default=None,
@@ -822,7 +809,7 @@ def main():
         max_ret=args.max_ret, subgenes_out_dir=args.subgenes_out_dir,
         outgroup=args.outgroup, parallel=args.parallel, threads=args.pl,
         java_mem=args.java_mem, java=args.java,
-        include_non_blob=args.include_non_blob, force=args.force,
+        force=args.force,
         max_runs=args.max_runs, only_runs=only_runs,
         only_divisions=only_divisions, list_only=args.list,
         assemble=assemble)

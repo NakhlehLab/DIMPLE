@@ -61,7 +61,7 @@ TIMINGS_NAME = 'dimple_timings.json'
 def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
                outgroup='OUT', size=12, k=15, seed=0, max_ret=1,
                parallel=1, threads=1, java='java', java_mem=DEFAULT_JAVA_MEM,
-               max_runs=None, prune_source='tob', force=False,
+               max_runs=None, force=False,
                skip_division=False, skip_inference=False):
     """Run all three DIMPLE stages. Returns the path of the final network."""
     os.makedirs(out_dir, exist_ok=True)
@@ -117,7 +117,6 @@ def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
             max_ret=max_ret, subgenes_out_dir=DEFAULT_SUBGENES_DIR,
             outgroup=outgroup_leaf, parallel=parallel, threads=threads,
             java_mem=java_mem, java=java,
-            include_non_blob=(prune_source == 'phylonet'),
             force=force, max_runs=max_runs)
         if n_fail:
             raise SystemExit(
@@ -135,7 +134,7 @@ def run_dimple(gene_trees, tob, base_tree, phylonet_jar, out_dir,
     merged = run_full_merger(
         divisions_dir, tob=tob, gene_trees=gene_trees,
         subgenes_out_dir=DEFAULT_SUBGENES_DIR, max_runs=max_runs,
-        out_name='full_merger', prune_source=prune_source)
+        out_name='full_merger')
     stage_seconds['stage3_merger'] = time.time() - t0
     stage_seconds['total'] = sum(stage_seconds.values())
 
@@ -210,9 +209,6 @@ def main():
                     help='Divisions inferred concurrently (default: 1).')
     ap.add_argument('--threads', type=int, default=1,
                     help="Threads per PhyloNet search (PhyloNet's -pl).")
-    ap.add_argument('--prune-source', choices=('tob', 'phylonet'), default='tob',
-                    help='Where the non-blob subnetworks come from: the tree '
-                         'of blobs (default) or PhyloNet inferences of them.')
     ap.add_argument('--java', default='java', help='Java executable.')
     ap.add_argument('--java-mem', default=DEFAULT_JAVA_MEM,
                     help=f'-Xmx for PhyloNet (default: {DEFAULT_JAVA_MEM}).')
@@ -230,7 +226,7 @@ def main():
                args.out, outgroup=args.outgroup, size=args.size, k=args.k,
                seed=args.seed, max_ret=args.max_ret, parallel=args.parallel,
                threads=args.threads, java=args.java, java_mem=args.java_mem,
-               max_runs=args.max_runs, prune_source=args.prune_source,
+               max_runs=args.max_runs,
                force=args.force, skip_division=args.skip_division,
                skip_inference=args.skip_inference)
 

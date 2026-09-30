@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from dimple.utils.network_util import (
     newick_to_nx, build_newick_from_graph, get_leafset, contract_degree2_nodes,
-    clean_extended_newick, extract_subnetwork_by_leaves, strip_branch_lengths,
+    clean_extended_newick, strip_branch_lengths,
 )
 
 
@@ -60,15 +60,10 @@ from dimple.merger.merger_util import (
 )
 
 
-def load_pruned_rows(metadata_csv, nwks_file, blob_name, T_orig=None):
+def load_pruned_rows(metadata_csv, nwks_file, blob_name):
     """Return list of dicts {idx, cut_edge, source_item, leaves, G} filtered
-    to rows where source_item.mega_blob == blob_name.
-
-    Multi-piece cuts: when v3's division had to split an oversized pruned
-    subtree into multiple rows (same `cut_edge`, keys `(u,v)_cut1`, `_cut2`, …),
-    we MERGE them back into a single logical pruned subtree using TOB
-    restricted to the union of all pieces' leaves. This preserves the original
-    pruned topology so the whole group attaches as one sibling.
+    to rows where source_item.mega_blob == blob_name. Every pruned subtree is
+    one row: the divider only cuts subtrees that fit within its size limit.
     """
     with open(nwks_file) as f:
         # [F5] subnet_idx is a PHYSICAL line number.  Dropping blank lines (a
@@ -99,70 +94,12 @@ def load_pruned_rows(metadata_csv, nwks_file, blob_name, T_orig=None):
                 'nwk': newicks[idx],
             })
 
-    # Group multi-piece cuts by cut_edge: v3 may split an oversized pruned
-    # subtree into rows keyed (u,v)_cut1, _cut2, ... — these share the same
-    # cut_edge tuple and represent pieces of one logical prune. Distinct
-    # prunes always have distinct cut_edges, so cut_edge grouping never
-    # merges semantically different prunes (unlike grouping by source_item
-    # siblings, which can collide when two cuts happen at points with the
-    # same residual sibling set).
-    groups = {}
-    for r in matched_rows:
-        ce = r['cut_edge']
-        key = f'ce:{ce}' if ce else f'__noedge_{r["idx"]}'
-        groups.setdefault(key, []).append(r)
-
     out = []
-    for key, rows in groups.items():
-        if len(rows) == 1:
-            r = rows[0]
-            G = newick_to_nx(_clean_keep_gamma(r['nwk']))        # [F6] pruned piece may be a network
-            out.append({'idx': r['idx'], 'cut_edge': r['cut_edge'],
-                        'source_item': r['source_item'],
-                        'leaves': r['leaves'], 'G': G,
-                        'multi_piece': False})
-            continue
-        # Same-source merge via TOB: union leaves, rebuild subtree from TOB.
-        all_leaves = set()
-        for r in rows:
-            all_leaves |= r['leaves']
-        merged_G = None
-        if T_orig is not None:
-            try:
-                sub = extract_subnetwork_by_leaves(T_orig, all_leaves)
-                sub = contract_degree2_nodes(sub)
-                merged_G = sub
-            except Exception as e:
-                print(f'  WARN: same-source merge via TOB failed for {key}: {e}')
-        if merged_G is None:
-            # Fallback: concat under a star root (loses inter-piece structure)
-            import networkx as _nx
-            merged_G = _nx.DiGraph()
-            merged_G.add_node('seed')
-            root = 'fallback_root'
-            merged_G.add_node(root)
-            merged_G.add_edge('seed', root)
-            for i, r in enumerate(rows):
-                g = newick_to_nx(_clean_keep_gamma(r['nwk']))    # [F6]
-                if 'seed' in g.nodes:
-                    gr_root = list(g.successors('seed'))[0]
-                    g.remove_node('seed')
-                else:
-                    gr_root = find_root(g)
-                used = set(merged_G.nodes)
-                gr, new_r, used = copy_with_unique_names(g, merged_G, gr_root, used)
-                merged_G.add_nodes_from(gr.nodes(data=True))
-                for u, v in gr.edges():
-                    merged_G.add_edge(u, v, **gr[u][v])
-                merged_G.add_edge(root, new_r)
-        first = rows[0]
-        out.append({'idx': first['idx'],
-                    'cut_edge': first['cut_edge'],
-                    'source_item': first['source_item'],
-                    'leaves': all_leaves,
-                    'G': merged_G,
-                    'multi_piece': True,
-                    'piece_count': len(rows)})
+    for r in matched_rows:
+        G = newick_to_nx(_clean_keep_gamma(r['nwk']))        # [F6] pruned piece may be a network
+        out.append({'idx': r['idx'], 'cut_edge': r['cut_edge'],
+                    'source_item': r['source_item'],
+                    'leaves': r['leaves'], 'G': G})
     return out
 
 
@@ -514,12 +451,8 @@ def main():
             T_orig.remove_node('OUT')
         T_orig = contract_degree2_nodes(T_orig)
 
-    pruned = load_pruned_rows(args.metadata, args.non_blob_nwks,
-                              args.blob_name, T_orig=T_orig)
-    print(f'Found {len(pruned)} pruned subtree groups for mega_blob={args.blob_name}')
-    n_multi = sum(1 for p in pruned if p.get('multi_piece'))
-    if n_multi:
-        print(f'  (of which {n_multi} are multi-piece merged via TOB)')
+    pruned = load_pruned_rows(args.metadata, args.non_blob_nwks, args.blob_name)
+    print(f'Found {len(pruned)} pruned subtrees for mega_blob={args.blob_name}')
 
     G, stats = add_pruned(blob_nwk, pruned, T_orig)
     for line in stats['log']:

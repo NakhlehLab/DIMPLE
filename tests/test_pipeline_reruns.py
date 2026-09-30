@@ -26,7 +26,7 @@ TOB = '(OUT,(z,(a,b,c,d,e,f)));'
 
 def divide(out, k=3, tob=TOB):
     with contextlib.redirect_stdout(io.StringIO()):
-        return D.process_division_leafsets(tob, SIZE=3, output_dir=str(out), k=k)
+        return D.process_division_leafsets(tob, SIZE=4, output_dir=str(out), k=k)
 
 
 def test_fewer_runs_cannot_reuse_old_partitions(tmp_path):

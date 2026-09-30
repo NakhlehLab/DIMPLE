@@ -526,8 +526,12 @@ def process_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_output
     successful completion. The previous directory is archived beside it, so
     obsolete blob/run directories cannot leak into inference or merging.
     """
-    if SIZE < 1 or k < 1:
-        raise ValueError('subset size and number of division attempts must be positive')
+    if k < 1:
+        raise ValueError('number of division attempts must be positive')
+    if SIZE < 4:
+        # global_prune_pass relies on every over-size candidate containing a
+        # cut of between SIZE/2 and SIZE leaves that also clears min_side=3.
+        raise ValueError('subset size must be at least 4')
     output = Path(os.path.abspath(output_dir))
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.is_symlink():
@@ -694,20 +698,14 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
     pruned_row_meta = {}
     for (u, v), leafset in pruned_subtrees.items():
         origin = pruned_origin.get((u, v))
-        if len(leafset) <= SIZE:
-            key = str((u, v))
-            non_blob_rows.append((key, set(leafset),
-                {'type': 'pruned_subtree', 'blob': 'N/A', 'cut_edge': str((u, v)),
-                 'group': None, 'mega_members': None, 'origin_mega': origin}))
-            pruned_row_meta[key] = str((u, v))
-        else:
-            pieces_p = cut_large_group(T, leafset, SIZE)
-            for i, (_, piece) in enumerate(pieces_p.items(), start=1):
-                key = f"{str((u, v))}_cut{i}"
-                non_blob_rows.append((key, set(piece),
-                    {'type': 'pruned_subtree', 'blob': 'N/A', 'cut_edge': str((u, v)),
-                     'group': None, 'mega_members': None, 'origin_mega': origin}))
-                pruned_row_meta[key] = str((u, v))
+        if len(leafset) > SIZE:   # global_prune_pass only ever cuts fitting subtrees
+            raise RuntimeError(f'pruned subtree {(u, v)} has {len(leafset)} '
+                               f'leaves, more than SIZE={SIZE}')
+        key = str((u, v))
+        non_blob_rows.append((key, set(leafset),
+            {'type': 'pruned_subtree', 'blob': 'N/A', 'cut_edge': str((u, v)),
+             'group': None, 'mega_members': None, 'origin_mega': origin}))
+        pruned_row_meta[key] = str((u, v))
 
     if outside_leaves:
         if len(outside_leaves) <= SIZE:

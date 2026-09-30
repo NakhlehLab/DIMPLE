@@ -169,38 +169,6 @@ def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
                   'n_runs': len(runs_found), 'n_retics_added': n_added}
 
 
-def build_phylonet_prune_newicks(metadata_dir, out_path, subgenes_out_dir='subgenes-out'):
-    """Use PhyloNet's per-prune inferences (non_blob/<subgenes_out_dir>/subnets.txt)
-    as prune subnets, indexed by subnet_idx in the metadata CSV. Returns the
-    number of non-empty newick lines written.
-
-    Each pruned_subtree row's `subnet_idx` indexes into the corresponding line
-    of subnets.txt. Rows without a phylonet inference (e.g. taxa < phylonet's
-    minimum) leave a blank line.
-    """
-    meta_csv = os.path.join(metadata_dir, 'non_blob',
-                            'subnetworks_output_metadata.csv')
-    sn_path = os.path.join(metadata_dir, 'non_blob', subgenes_out_dir, 'subnets.txt')
-    if not os.path.exists(sn_path):
-        raise FileNotFoundError(f'phylonet prune source missing: {sn_path}')
-    with open(sn_path) as f:
-        sn_lines = [l.strip() for l in f]
-    rows = list(csv.DictReader(open(meta_csv)))
-    if not rows: return 0
-    max_idx = max(int(r['subnet_idx']) for r in rows)
-    out = [''] * (max_idx + 1)
-    n = 0
-    for r in rows:
-        if r['type'] != 'pruned_subtree': continue
-        idx = int(r['subnet_idx'])
-        if idx < len(sn_lines) and sn_lines[idx]:
-            out[idx] = sn_lines[idx]
-            n += 1
-    with open(out_path, 'w') as f:
-        for line in out: f.write(line + '\n')
-    return n
-
-
 def build_tob_prune_newicks(tob_path, metadata_dir, out_path):
     """Materialize <metadata_dir>/non_blob/tob_subnets.txt at out_path so the
     add_pruned_subtree step (which expects a file path) can consume it. The
@@ -277,18 +245,13 @@ def main():
     ap.add_argument('--out-name', default='full_merger',
                     help='Output subfolder name under divisions_dir '
                          '(default: full_merger)')
-    ap.add_argument('--prune-source', choices=('tob', 'phylonet'), default='tob',
-                    help='Prune-subnet source for stage 2. '
-                         '"tob" (default) extracts each prune leafset from the '
-                         'iqtree TOB. "phylonet" uses non_blob/subgenes-out/'
-                         'subnets.txt (PhyloNet-inferred prunes).')
     args = ap.parse_args()
     _run(args)
 
 
 def run_full_merger(divisions_dir, tob, gene_trees, metadata_dir=None,
                     subgenes_out_dir='subgenes-out', max_runs=None,
-                    out_name='full_merger', prune_source='tob',
+                    out_name='full_merger',
                     subnet_source='subnets.txt'):
     """Run the merger in-process. Returns the path of the final network.
 
@@ -298,7 +261,7 @@ def run_full_merger(divisions_dir, tob, gene_trees, metadata_dir=None,
     return _run(argparse.Namespace(
         divisions_dir=divisions_dir, metadata_dir=metadata_dir, tob=tob,
         gene_trees=gene_trees, subgenes_out_dir=subgenes_out_dir,
-        max_runs=max_runs, out_name=out_name, prune_source=prune_source,
+        max_runs=max_runs, out_name=out_name,
         subnet_source=subnet_source))
 
 
@@ -432,15 +395,9 @@ def _run(args):
     t2 = time.time(); c2 = _cpu_now()
     nb_meta = os.path.join(args.metadata_dir, 'non_blob',
                             'subnetworks_output_metadata.csv')
-    if args.prune_source == 'phylonet':
-        prunes_path = os.path.join(out_dir, 'phylonet_prune_subnets.txt')
-        n_pr = build_phylonet_prune_newicks(args.metadata_dir, prunes_path,
-                                              args.subgenes_out_dir)
-        src_label = 'PhyloNet-inferred'
-    else:
-        prunes_path = os.path.join(out_dir, 'tob_prune_subnets.txt')
-        n_pr = build_tob_prune_newicks(args.tob, args.metadata_dir, prunes_path)
-        src_label = 'TOB-restricted'
+    prunes_path = os.path.join(out_dir, 'tob_prune_subnets.txt')
+    n_pr = build_tob_prune_newicks(args.tob, args.metadata_dir, prunes_path)
+    src_label = 'TOB-restricted'
     stage_timings['stage2_build_tob_prunes'] = time.time() - t2
     stage_timings['stage2_build_tob_prunes_cpu'] = _cpu_now() - c2
     print(f'\n[stage 2] built {n_pr} {src_label} prune subnets '

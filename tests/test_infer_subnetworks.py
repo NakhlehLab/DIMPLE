@@ -35,7 +35,7 @@ def test_rows_keep_their_line_number(tmp_path=None):
     assert n_rows == 3
     assert sorted(div) == [1, 3]                 # row 1 (one leaf) is skipped, not renumbered
     assert div[1] == ({'a', 'b', 'c'}, 2)
-    assert div[3] == ({'d', 'e', 'f'}, 0)        # tree-like rows get r = 0
+    assert div[3] == ({'d', 'e', 'f'}, 2)        # every row takes max_ret
 
 
 def test_skipped_row_becomes_blank_line(tmp_path=None):
