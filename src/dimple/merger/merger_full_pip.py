@@ -77,7 +77,6 @@ from dimple.utils.network_util import (
 from dimple.merger.blob_merger import (
     get_blob_name, list_run_dirs, read_phylonet_subnets,
     analyze_blob, write_inputs_file, run_merger,
-    _default_gene_trees,
 )
 from dimple.merger.merger_util import compute_dm_full
 from dimple.utils.division_util import (

@@ -42,7 +42,6 @@ Usage:
         --out dimple_out
 """
 import os
-import sys
 import json
 import time
 import shutil

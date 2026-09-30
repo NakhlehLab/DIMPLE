@@ -10,7 +10,6 @@ pick DT with best pseudolikelihood score (gene tree triple support)
 """
 
 import dendropy
-from dendropy.calculate.treecompare import false_positives_and_negatives
 
 from dimple.utils.network_util import (
     newick_to_nx, build_newick_from_graph, get_leafset,

@@ -25,7 +25,6 @@ import networkx as nx
 
 from dimple.utils.network_util import (
     get_leafset,
-    get_blob_nodes,
     contract_degree2_nodes,
     newick_to_nx,
     build_newick_from_graph,
@@ -386,17 +385,6 @@ def build_mega_blobs(all_blobs, blob_relationships):
     return [frozenset(g) for g in groups.values()]
 
 
-def mega_blob_root(T_residual, M, blob_relationships):
-    """
-    Earliest member of M in the blob hierarchy (has no blob-parent in M).
-    """
-    for B in M:
-        parents_in_M = blob_relationships[B]['parents'] & M
-        if not parents_in_M:
-            return B
-    return next(iter(M))
-
-
 def mega_blob_items(T_residual, M, all_blobs_set):
     """
     Walk from mega-blob root down through member blobs only. At non-member
@@ -461,15 +449,6 @@ def mega_blob_items(T_residual, M, all_blobs_set):
 
     walk(root)
     return items
-
-
-def mega_blob_leafset(T_residual, M, all_blobs_set):
-    """Union of all items' leafsets (the total leaves this mega-blob covers)."""
-    items = mega_blob_items(T_residual, M, all_blobs_set)
-    out = set()
-    for _, ls in items:
-        out |= ls
-    return out
 
 
 def mega_blob_name(M):

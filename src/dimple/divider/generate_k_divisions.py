@@ -29,7 +29,6 @@ Blob indexing (blob00, blob01, ...) is by sorted mega_blob_name.
 '''
 
 import os
-import re
 import random
 import csv
 import json
@@ -46,20 +45,16 @@ from collections import defaultdict
 from dimple.utils.network_util import (
     newick_to_nx,
     clean_extended_newick,
-    build_newick_from_graph,
     get_leafset,
     extract_subnetwork_by_leaves,
     get_blob_nodes,
-    count_reticulations,
 )
 from dimple.utils.division_util import (
     find_direct_child_blobs_dict,
     compute_forbidden_edges,
     global_prune_pass,
     build_mega_blobs,
-    mega_blob_root,
     mega_blob_items,
-    mega_blob_leafset,
     mega_blob_name,
     isolate_mega_blobs,
     final_cut_edges as _v1_final_cut_edges,

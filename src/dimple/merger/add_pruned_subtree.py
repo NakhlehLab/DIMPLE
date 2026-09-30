@@ -35,7 +35,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
-import networkx as nx
 from dimple.utils.network_util import (
     newick_to_nx, build_newick_from_graph, get_leafset, contract_degree2_nodes,
     clean_extended_newick, extract_subnetwork_by_leaves, strip_branch_lengths,

@@ -297,14 +297,6 @@ def extract_subnetwork_by_leaves(G, leaf_set):
     subG = process_degree2_seed(subG)
     return subG
 
-def get_biconnected_component_nodes(network):
-    undirected = network.to_undirected()
-    loop_nodes = set()
-    for component in nx.biconnected_components(undirected):
-        if len(component) > 2:
-            loop_nodes.update(component)
-    return loop_nodes
-
 def clean_extended_newick(newick_str):
     # Step 1: Remove [pp1=...;pp2=...;pp3=...] annotations
     cleaned = re.sub(r"'\[pp\d=[^]]+\]'", "", newick_str)
@@ -401,9 +393,6 @@ def build_newick_from_graph(G):
         return subtree + label
 
     return clean_seed_wrapper(recurse(root)) + ";"
-
-def count_reticulations(subG):
-    return sum(1 for n in subG.nodes if subG.in_degree(n) == 2)
 
 def enumerate_displayed_trees(g):
     # Identify reticulation nodes: nodes with >1 parent
