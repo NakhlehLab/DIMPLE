@@ -592,10 +592,12 @@ def compute_dm_full(gene_trees_file, verbose=False):
     """Average gene-tree distance matrix over EVERY taxon in `gene_trees_file`.
 
     Identical values to `compute_dm` on any sub-block: entry (a, b) is the sum
-    of d_tree(a, b) over all gene trees divided by the TOTAL tree count, which
-    depends only on the pair (a, b) -- never on which other taxa happen to be
-    in the label set. So `compute_dm_full(f).loc[sub, sub]` equals
-    `compute_dm(f, sub)` exactly; slicing is not an approximation.
+    of d_tree(a, b) over the gene trees containing both a and b, divided by the
+    number of those trees (see `_mean_over_observed`), which depends only on
+    the pair (a, b) -- never on which other taxa happen to be in the label
+    set. So `compute_dm_full(f).loc[sub, sub]` equals `compute_dm(f, sub)`
+    exactly; slicing is not an approximation. A pair that never co-occurs is
+    NaN here; only a blob that needs it fails.
 
     Computing this once per dataset instead of once per blob removes the
     merger's dominant cost. `compute_dm` builds a full N x N
