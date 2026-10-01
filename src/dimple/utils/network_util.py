@@ -104,8 +104,15 @@ def newick_to_nx(inp_str, is_astral=False):
     # Rename any node named exactly "seed" to avoid conflict with parser root
     inp_str = re.sub(r'\bseed\b', '_seed_', inp_str)
 
+    # Start the auto-name counter past the largest explicit `node_<N>` label
+    # already in the input. Otherwise an unlabelled node is auto-named node_0
+    # and later collides with a literal node_0 label, which networkx silently
+    # treats as the same node, producing a self-loop and a detached seed.
+    existing = [int(m.group(1)) for m in re.finditer(r'\bnode_(\d+)\b', inp_str)]
+    start_idx = (max(existing) + 1) if existing else 0
+
     newick_str = inp_str[:-1]
-    net, node_id, node_name = parse_node_info(newick_str, net, 0, "seed")
+    net, node_id, node_name = parse_node_info(newick_str, net, start_idx, "seed")
     new_nodes, node_id = parse_children(newick_str, net, node_id, node_name, is_astral)
 
     while len(new_nodes) > 0:

@@ -302,15 +302,37 @@ def _run(args):
     # Identify blobs from metadata (authoritative source for blob names + items)
     blobs = list_blobs_from_metadata(args.metadata_dir)
     if not blobs:
-        # No blobs in the divider's metadata. This is an error condition, not a
-        # valid result: the divider should have produced at least one blob for
-        # any non-trivial network. Report and fail instead of silently copying
-        # the TOB tree through as merged_full.nwk (which masks divider failures).
-        raise SystemExit(
-            f'ERROR: no blobs found in metadata_dir {args.metadata_dir} — '
-            f'nothing to merge. The divider produced no blob groups; check that '
-            f'its non_blob/blob* outputs were generated and transferred '
-            f'correctly. Refusing to fall back to copying the TOB tree.')
+        # A fully binary TOB has no blob to reconstruct: the blob test found no
+        # reticulation anywhere, so DIMPLE's estimate for this replicate IS the
+        # TOB. Emit it directly, formatted as stage 4 would (branch lengths
+        # stripped), so the replicate yields a scoreable zero-reticulation
+        # network instead of no output at all.
+        #
+        # This is only valid when the TOB is genuinely binary. A multifurcated
+        # TOB with no blob metadata means the divider failed or its outputs were
+        # not transferred, which must stay an error rather than a silent
+        # passthrough of an unresolved tree.
+        tob_str = clean_extended_newick(open(args.tob).read().strip())
+        T_tob = newick_to_nx(tob_str)
+        multifurcations = [n for n in T_tob.nodes() if T_tob.out_degree(n) > 2]
+        if multifurcations:
+            raise SystemExit(
+                f'ERROR: no blobs found in metadata_dir {args.metadata_dir}, but '
+                f'the TOB has {len(multifurcations)} multifurcation(s) — it is not '
+                f'a resolved tree, so there is something to reconstruct and the '
+                f'divider evidently failed. Check that its non_blob/blob* outputs '
+                f'were generated and transferred correctly. Refusing to fall back '
+                f'to copying an unresolved TOB tree.')
+        final_path = os.path.join(out_dir, 'merged_full.nwk')
+        nwk_out = strip_branch_lengths(build_newick_from_graph(T_tob))
+        with open(final_path, 'w') as f:
+            f.write(nwk_out + '\n')
+        n_leaves = len(get_leafset(T_tob) - {'seed'})
+        print(f'blobs         → 0 (TOB is fully binary)', flush=True)
+        print(f'\nNo blob in the TOB: the blob test detected no reticulation, so '
+              f'the merged network is the TOB itself.\n'
+              f'  → {final_path}: {n_leaves} leaves, 0 reticulations', flush=True)
+        return final_path
     print(f'blobs         → {len(blobs)}', flush=True)
 
     # Stage timings (peak memory captured by /usr/bin/time -v wrapper for
