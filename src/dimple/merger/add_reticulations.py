@@ -531,7 +531,7 @@ def add_retics_greedily(tree, networks, score_fn, used_major_list=None,
                     if isinstance(n, str) and re.match(r'^#H\d+$', n)]
     retic_counter = max(existing_ids, default=0) + 1
 
-    all_retics = _collect_and_sort_retics(networks, used_major_list)
+    all_retics = _collect_and_sort_retics(networks, used_major_list, tree=tree)
 
     current_score = score_fn(tree)
     # [F2] Scorers turn every exception into inf.  A non-finite BASE score means
@@ -624,7 +624,7 @@ def add_all_reticulations(tree, networks, score_fn=None, used_major_list=None):
     if used_major_list is None:
         used_major_list = [True] * len(networks)
 
-    all_retics = _collect_and_sort_retics(networks, used_major_list)
+    all_retics = _collect_and_sort_retics(networks, used_major_list, tree=tree)
     if score_fn is not None:
         _require_finite_base(score_fn(tree))       # [F2]
 
