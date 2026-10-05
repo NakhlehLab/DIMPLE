@@ -471,7 +471,7 @@ def precompute_gt_triplets(gene_tree_file, taxa):
 
     Returns (gt_triplets, mapping).
     """
-    from phynetpy.MPL import MPL
+    from phynetpy._mpl import MPL
     from phynetpy.IO import read_newick_file
 
     taxa = sorted(set(taxa))
@@ -499,7 +499,7 @@ def MPL_score(gene_tree_file, leaf_set, gt_triplets=None,
     If gt_triplets is provided (from precompute_gt_triplets), skips the
     expensive triplet computation.
     """
-    from phynetpy.MPL import MPL
+    from phynetpy._mpl import MPL
 
     if gt_triplets is None:
         gt_triplets, mapping = precompute_gt_triplets(gene_tree_file, leaf_set)

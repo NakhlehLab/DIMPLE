@@ -11,7 +11,8 @@ and ASTRAL v5.7.8.
 ## Requirements
 
 - Python 3.11 with `networkx`, `dendropy`, `numpy`, `pandas`
-- `phynetpy` (pseudo-likelihood scoring in the merger)
+- PhyNetPy 0.6.0 (`pip install phynetpy==0.6.0`), for the pseudo-likelihood
+  scoring in the merger
 - Java 17 and `PhyloNet.jar` v3.8.2 (https://phylogenomics.rice.edu/html/phylonet.html)
 - TREE-QMC v4.0.1 (https://github.com/molloy-lab/TREE-QMC)
 - ASTRAL v5.7.8 (https://github.com/smirarab/ASTRAL)
@@ -21,6 +22,13 @@ Put `src/` on `PYTHONPATH`:
 ```
 export PYTHONPATH=/path/to/DIMPLE/src
 ```
+
+## Inputs
+
+- `gene_trees.tre`: one rooted newick per line, all containing the outgroup
+  leaf (`OUT` below)
+- `astral.tre`: a binary tree on the same taxa
+- `tob_rooted.tre`: the tree of blobs, rooted at the outgroup (see below)
 
 The example commands below use `gene_trees.tre`, containing one Newick gene
 tree per line on the full taxon set, and `OUT` as the outgroup label. The file
@@ -44,7 +52,7 @@ tree-qmc --iter_limit_blob 5000 --store_pvalue \
 ```
 
 **Step 2: Construct and root the TOB.**
-Contract the annotated branches using the stored *p*-values with the default
+Contract the annotated branches using the stored *p*-values with the
 thresholds `alpha = 1e-7` and `beta = 0.95`, and root the result at the
 outgroup:
 
@@ -80,11 +88,11 @@ python -m dimple.divider.generate_k_divisions \
 
 Every subnetwork is inferred individually. `--list` prints each division run
 with the indices of its subsets. A subnetwork can then be inferred for each
-subset with the number of reticulations chosen for it; the inference results
+subset with the reticulation limit chosen for it; the inference results
 for each tested reticulation limit are retained. Finally, `--assemble` writes
 the division run's `subnets.txt` from the results, taking for each subset the
-network inferred with the listed number of reticulations (one number per
-subset in order).
+network inferred under the listed reticulation limit (one number per subset
+in order).
 
 *List the subsets in each division run.*
 
@@ -94,7 +102,7 @@ python -m dimple.phylonet.infer_subnetworks dimple_out \
     --phylonet PhyloNet.jar --list
 ```
 
-*Infer a subnetwork for one subset at a specified reticulation count.*
+*Infer a subnetwork for one subset with a specified reticulation limit.*
 
 ```
 python -m dimple.phylonet.infer_subnetworks dimple_out \
@@ -103,7 +111,9 @@ python -m dimple.phylonet.infer_subnetworks dimple_out \
     --only blob00/run_000 --subset 1 --max-ret 1
 ```
 
-*Assemble the selected subnetworks for a division run.*
+*Assemble the selected subnetworks for a division run.* This example assumes
+three subsets, already inferred under limits 1, 1, and 0, respectively. Repeat
+inference and assembly for every division run.
 
 ```
 python -m dimple.phylonet.infer_subnetworks dimple_out \
@@ -121,7 +131,7 @@ Inside each division run, `subgenes-out/` holds:
 subset<i>/leaf_subset.txt    the subset's taxa
 subset<i>/base_tree.tre      starting tree restricted to the subset
 subset<i>/tmp_mpl.nex        the NEXUS handed to PhyloNet in the latest inference
-subset<i>/subnet_ret<r>.txt  inferred network for r reticulations, outgroup removed
+subset<i>/subnet_ret<r>.txt  inferred network under reticulation limit r, outgroup removed
 subset<i>/mpl_ret<r>.log     raw PhyloNet output for that inference
 subnets.txt                  line i = the network chosen for subset i
 inputs.json                  which inputs every result and subnets.txt came from
