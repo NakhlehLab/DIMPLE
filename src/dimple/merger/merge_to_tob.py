@@ -320,10 +320,6 @@ def merge(ds_dir, mode='gt', out_path=None, divisions_dir='divisions3',
 
     T = contract_degree2_nodes(T)
 
-    # OUT is preserved by graft logic if the input TOB had one. We do NOT
-    # synthesize a fake OUT when missing — biological data may have its own
-    # designated outgroup clade and adding 'OUT' would mangle the topology.
-
     nwk_out = strip_branch_lengths(build_newick_from_graph(T))
     if out_path is None:
         out_path = f'{ds_dir}/{divisions_dir}/merged_full_{mode}.nwk'

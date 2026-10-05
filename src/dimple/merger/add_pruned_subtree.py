@@ -42,13 +42,10 @@ from dimple.utils.network_util import (
 
 
 def _clean_keep_gamma(nwk):
-    """[F6] clean_extended_newick, but keeping the inheritance probabilities.
+    """clean_extended_newick, but keeping the inheritance probabilities.
 
-    clean_extended_newick strips '::gamma'; the parser then defaults every hybrid
-    edge to 1, and every exported network carried gamma = 1 and 1.  Its other jobs
-    still matter: newick_to_nx uses an internal label as the node's IDENTITY, so
-    two clades both labelled with support '95' would be merged into one node (and
-    a reticulation between them would vanish).
+    Numeric support labels are still dropped: newick_to_nx uses an internal
+    label as the node's identity, so two clades with support '95' would merge.
     """
     s = re.sub(r"'\[pp\d=[^]]+\]'", '', nwk)          # ASTRAL-style annotations
     s = strip_branch_lengths(re.sub(r'\s+', '', s))     # drops lengths, keeps ':0::gamma'
@@ -66,9 +63,8 @@ def load_pruned_rows(metadata_csv, nwks_file, blob_name):
     one row: the divider only cuts subtrees that fit within its size limit.
     """
     with open(nwks_file) as f:
-        # [F5] subnet_idx is a PHYSICAL line number.  Dropping blank lines (a
-        # missing estimate keeps its slot as an empty line) attached every later
-        # tree under the previous row's taxa and silently lost the last row.
+        # subnet_idx is a physical line number; a missing estimate is an empty
+        # line that keeps its slot, so blank lines must not be dropped.
         newicks = [l.strip() for l in f]
 
     matched_rows = []
@@ -96,7 +92,7 @@ def load_pruned_rows(metadata_csv, nwks_file, blob_name):
 
     out = []
     for r in matched_rows:
-        G = newick_to_nx(_clean_keep_gamma(r['nwk']))        # [F6] pruned piece may be a network
+        G = newick_to_nx(_clean_keep_gamma(r['nwk']))        # pruned piece may be a network
         out.append({'idx': r['idx'], 'cut_edge': r['cut_edge'],
                     'source_item': r['source_item'],
                     'leaves': r['leaves'], 'G': G})
@@ -235,7 +231,7 @@ def add_pruned(blob_nwk, pruned_rows, T_orig=None):
          clade, attach the pruned subtree at the BLOB ROOT (as sibling of the
          entire blob expansion), not at source_item's MRCA inside the blob.
     """
-    G = newick_to_nx(_clean_keep_gamma(blob_nwk))                # [F6]
+    G = newick_to_nx(_clean_keep_gamma(blob_nwk))
     if 'OUT' in G.nodes:
         G.remove_node('OUT')
         G = contract_degree2_nodes(G)

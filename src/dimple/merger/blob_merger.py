@@ -90,8 +90,7 @@ def read_phylonet_subnets(run_dir, subnet_source):
     if not (os.path.exists(meta) and os.path.exists(subnets_file)):
         return []
     with open(subnets_file) as f:
-        # [F5] subnet_idx is a PHYSICAL line number: dropping blank lines here
-        # paired every later tree with the previous row's metadata.
+        # subnet_idx is a physical line number; keep blank lines.
         lines = [l.strip() for l in f]
     out = []
     with open(meta) as f:
@@ -289,7 +288,7 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
     else:
         if verbose:
             print(f'  Reusing shared distance matrix ({len(dm.index)} taxa)', flush=True)
-        # [F8] compute_dm_full leaves NaN where two taxa never share a gene tree.
+        # compute_dm_full leaves NaN where two taxa never share a gene tree.
         need = [t for t in all_taxa | set(sibling_leaves) if t in dm.index]
         if dm.loc[need, need].isna().values.any():
             raise ValueError('this blob needs a distance between taxa that never '
@@ -306,8 +305,7 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
             print(f'  DT-select: {len(sel)} trees from {len(all_subnets)} subnets',
                   flush=True)
     except Exception as e:
-        # [F2] A crash here is not the result "no reticulate input": fail unless
-        # the tree-only fallback was asked for, and always say why.
+        # A crash is not "no reticulate input": fail unless the tree-only fallback is enabled.
         print(f'  DT-select failed ({e})', flush=True)
         if not os.environ.get('DIMPLE_ALLOW_TREE_FALLBACK') == '1':
             raise
@@ -350,7 +348,7 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
         if verbose:
             print(f'  Retics added: {n_added}', flush=True)
     except Exception as e:
-        # [F2] Otherwise indistinguishable from "no reticulation was accepted".
+        # A crash is not "no reticulation accepted": fail unless the tree-only fallback is enabled.
         print(f'  add_retics failed: {e}', flush=True)
         if not os.environ.get('DIMPLE_ALLOW_TREE_FALLBACK') == '1':
             raise

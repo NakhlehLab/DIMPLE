@@ -542,11 +542,9 @@ def tree_to_newick(t):
 
 
 def _mean_over_observed(S, C, strict=True):
-    """[F8] Mean distance over the trees where the pair actually co-occurs.
+    """Mean distance over the trees in which the pair co-occurs.
 
-    Dividing by the TOTAL tree count shrank every pair that some trees lack, and
-    gave a pair never seen together distance 0 -- "identical" -- which NJ joins
-    first.  With complete taxon coverage C == tree count, so nothing changes.
+    With complete taxon coverage C equals the tree count.
     """
     never = (C == 0) & ~np.eye(len(C), dtype=bool)
     if never.any() and strict:
@@ -571,7 +569,7 @@ def compute_dm(gene_trees_file, taxa_set):
     tmap = {t.label: t for t in shared_ns}
     n = len(labels)
     S = np.zeros((n, n))
-    C = np.zeros((n, n))      # [F8] trees in which each PAIR was observed
+    C = np.zeros((n, n))      # trees in which each pair was observed
     cnt = 0
     for tree in trees:
         tt = set(l.taxon.label for l in tree.leaf_nodes())
@@ -613,7 +611,7 @@ def compute_dm_full(gene_trees_file, verbose=False):
     idx = {lab: i for i, lab in enumerate(labels)}
     n = len(labels)
     S = np.zeros((n, n))
-    C = np.zeros((n, n))      # [F8]
+    C = np.zeros((n, n))      # trees in which each pair was observed
     cnt = 0
     for tree in trees:
         # Iterate the taxa actually present in this tree rather than testing

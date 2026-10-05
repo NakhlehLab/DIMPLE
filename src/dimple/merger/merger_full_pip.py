@@ -253,11 +253,7 @@ def run_full_merger(divisions_dir, tob, gene_trees, metadata_dir=None,
                     subgenes_out_dir='subgenes-out', max_runs=None,
                     out_name='full_merger',
                     subnet_source='subnets.txt'):
-    """Run the merger in-process. Returns the path of the final network.
-
-    Same pipeline as the CLI; used by dimple.run_dimple so the three DIMPLE
-    stages can run under one command.
-    """
+    """Run the merger in-process. Returns the path of the final network."""
     return _run(argparse.Namespace(
         divisions_dir=divisions_dir, metadata_dir=metadata_dir, tob=tob,
         gene_trees=gene_trees, subgenes_out_dir=subgenes_out_dir,
@@ -282,8 +278,7 @@ def _run(args):
 
     out_dir = os.path.join(args.divisions_dir, args.out_name)
     os.makedirs(out_dir, exist_ok=True)
-    # [F1] A result left by an earlier run must never stand in for this one -- removed
-    # HERE, before any stage, so a failure in stage 1-3 cannot leave it behind either.
+    # Remove any result from an earlier run before any stage starts.
     _stale = os.path.join(out_dir, 'merged_full.nwk')
     if os.path.exists(_stale):
         os.remove(_stale)
@@ -523,8 +518,6 @@ def _run(args):
         if created_link:
             try: os.unlink(link_path)
             except Exception: pass
-    # [F1] Assembly failing (or being skipped for want of the symlink) used to
-    # fall through to the success message below.
     # A partly written file is non-empty, so the exception decides, not the file.
     if stage4_error is not None or not (os.path.exists(final_path)
                                         and os.path.getsize(final_path) > 0):
