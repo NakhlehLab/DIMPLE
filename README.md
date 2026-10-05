@@ -100,8 +100,8 @@ The gene trees and the base tree are restricted to the subset plus the
 outgroup and rooted at it, PhyloNet's `InferNetwork_MPL` is run with
 `--max-ret` reticulations, and the outgroup is pruned from the result. Every
 bound tried for a subset is kept, so the same subset can be inferred again
-with another `--max-ret`. `--subset` takes a list (`1,3`), `--pl` is the number
-of PhyloNet threads, and `--force` redoes a result that already exists.
+with another `--max-ret`. `--subset` takes a list (`1,3`) and `--pl` is the
+number of PhyloNet threads.
 
 Finally choose the number of reticulations for each subset and write the
 division run's `subnets.txt`:
