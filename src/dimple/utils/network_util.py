@@ -1,6 +1,7 @@
 from copy import deepcopy
 import itertools
 import re
+import collections
 
 import networkx as nx
 
@@ -159,9 +160,13 @@ def contract_degree2_nodes(subG):
     return subG
 
 def prune_non_leaf_deadends(G, original_leaves):
-    to_remove = [n for n in G.nodes if G.out_degree(n) == 0 and n not in original_leaves]
-    G.remove_nodes_from(to_remove)
-    return G
+    """Drop childless non-leaves, iterated: removing one can orphan its parent."""
+    while True:
+        to_remove = [n for n in G.nodes
+                     if G.out_degree(n) == 0 and n not in original_leaves]
+        if not to_remove:
+            return G
+        G.remove_nodes_from(to_remove)
 
 def process_degree2_seed(subG):
     leaves = {n for n in subG.nodes if subG.out_degree(n) == 0}
@@ -302,6 +307,7 @@ def extract_subnetwork_by_leaves(G, leaf_set):
     subG = prune_non_leaf_deadends(subG, leaf_set)
     subG = remove_ancestral_parent_edges(subG)
     subG = process_degree2_seed(subG)
+    assert_no_hybrid_leaves(subG, 'extract_subnetwork_by_leaves')
     return subG
 
 def clean_extended_newick(newick_str):
@@ -342,6 +348,36 @@ def format_number(val):
     except:
         return str(val)
     return str(int(f)) if f.is_integer() else str(f)
+
+HYBRID_DECL = re.compile(r'\)\s*(#[A-Za-z]\w*)')
+HYBRID_TIP = re.compile(r'(?:^|[(,])\s*(#[A-Za-z]\w*)')
+
+
+def check_hybrid_tags(newick_str, where=''):
+    """Reject a `#H` tag that is never declared, or appears as a tip twice."""
+    decl = collections.Counter(HYBRID_DECL.findall(newick_str))
+    tips = collections.Counter(HYBRID_TIP.findall(newick_str))
+    ctx = f' in {where}' if where else ''
+    undeclared = sorted(t for t in tips if not decl[t])
+    if undeclared:
+        raise ValueError(f"undeclared hybrid tag(s){ctx}: {undeclared} "
+                         f"-- only a tip, never declared, so read as a leaf taxon")
+    repeated = sorted(t for t, n in tips.items() if n > 1)
+    if repeated:
+        raise ValueError(f"hybrid tag(s) repeated as a tip{ctx}: "
+                         f"{ {t: tips[t] for t in repeated} } -- at most one allowed")
+    return decl, tips
+
+
+def assert_no_hybrid_leaves(G, where=''):
+    """Reject a reticulation left childless; it cannot be written as valid newick."""
+    bad = [n for n in G.nodes
+           if G.out_degree(n) == 0 and (G.in_degree(n) > 1 or str(n).startswith('#H'))]
+    if bad:
+        raise ValueError(f"childless reticulation(s){' in ' + where if where else ''}: "
+                         f"{sorted(map(str, bad))} -- cannot be written as newick")
+    return G
+
 
 def build_newick_from_graph(G):
     # Find root

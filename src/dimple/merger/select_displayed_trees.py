@@ -14,7 +14,7 @@ import dendropy
 from dimple.utils.network_util import (
     newick_to_nx, build_newick_from_graph, get_leafset,
     enumerate_displayed_trees, clean_extended_newick,
-    contract_degree2_nodes,
+    contract_degree2_nodes, check_hybrid_tags,
 )
 from dimple.merger.merger_util import (
     precompute_gene_tree_triples, _extract_triples_from_nx,
@@ -199,8 +199,12 @@ def select_displayed_trees(newick_list, gene_tree_file=None, triple_cache=None):
     return selected, info
 
 
-def _get_taxa_quick(newick_str):
-    """Quick taxa extraction."""
-    t = dendropy.Tree.get(data=clean_extended_newick(newick_str), schema="newick",
-                          preserve_underscores=True)
-    return set(l.taxon.label for l in t.leaf_nodes())
+def _get_taxa_quick(newick_str, where=''):
+    """Leaf labels, as merger_util.get_taxa: malformed `#H` tags are refused."""
+    cleaned = clean_extended_newick(newick_str)
+    check_hybrid_tags(cleaned, where)
+    t = dendropy.Tree.get(data=cleaned, schema="newick",
+                          preserve_underscores=True,
+                          suppress_internal_node_taxa=True,
+                          suppress_leaf_node_taxa=True)
+    return {n.label for n in t.leaf_node_iter() if n.label}

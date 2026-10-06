@@ -14,6 +14,7 @@ from dendropy import TreeList
 
 from dimple.utils.network_util import (
     get_leafset, enumerate_displayed_trees, clean_extended_newick,
+    check_hybrid_tags,
 )
 
 
@@ -523,11 +524,15 @@ def MPL_score(gene_tree_file, leaf_set, gt_triplets=None,
 # General newick / gene-tree helpers (used by blob_merger and overlap_njmerge)
 # ---------------------------------------------------------------------------
 
-def get_taxa(newick_str):
-    """Extract leaf labels from a newick string (works on extended newick)."""
-    t = dendropy.Tree.get(data=clean_extended_newick(newick_str), schema='newick',
-                          preserve_underscores=True)
-    return set(l.taxon.label for l in t.leaf_nodes())
+def get_taxa(newick_str, where=''):
+    """Leaf labels, `#H` tags included; malformed hybrid tags are refused."""
+    cleaned = clean_extended_newick(newick_str)
+    check_hybrid_tags(cleaned, where)
+    t = dendropy.Tree.get(data=cleaned, schema='newick',
+                          preserve_underscores=True,
+                          suppress_internal_node_taxa=True,
+                          suppress_leaf_node_taxa=True)
+    return {n.label for n in t.leaf_node_iter() if n.label}
 
 
 def tree_to_newick(t):
