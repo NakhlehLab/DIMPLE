@@ -3,11 +3,12 @@ NJMerge for overlapping constraint trees.
 
 Two layers:
 
-1. Core in-place NJMerge algorithm (mirrors InPhyNet.jl): for each constraint
-   tree we maintain a leaf-pair sibling set. Validity for joining (a, b)
-   reduces to checking sibling membership in each tree where both leaves
-   are present. No deepcopy in the inner loop — constraint trees are mutated
-   in place.
+1. Core in-place NJMerge algorithm: for each constraint tree we maintain a
+   leaf-pair sibling set. Validity for joining (a, b) reduces to checking
+   sibling membership in each tree where both leaves are present. No deepcopy
+   in the inner loop — constraint trees are mutated in place. This
+   sibling-pair bookkeeping follows the approach used in InPhyNet.jl (Kolbow
+   et al., below); the implementation here is independent.
 
    Public API:
      matrix_to_dendropy_pdm(dmat, taxa)            -> dendropy PDM
@@ -18,10 +19,14 @@ Two layers:
      run_overlap_njmerge(newick_list, dm)  -> merged newick string
      select_compatible_subset(newicks)     -> max-clique compatible subset
 
-Based on NJMerge from:
+References:
     Molloy, E.K., Warnow, T. (2018). NJMerge: A generic technique for
-    scaling phylogeny estimation methods and its application to
-    species trees.
+    scaling phylogeny estimation methods and its application to species
+    trees. Comparative Genomics (RECOMB-CG 2018), LNCS 11183, Springer.
+    doi:10.1007/978-3-030-00834-5_15
+    Kolbow, N., Kong, S., Solís-Lemus, C. (2025). A method for massively
+    scalable inference of phylogenetic networks. bioRxiv.
+    doi:10.1101/2025.05.05.652278
 """
 
 import sys
@@ -349,9 +354,10 @@ def _newick_join(left_subnet_nwk, right_subnet_nwk):
 def merge_trees_via_nj(pdm, trees, verbose=False):
     """Overlap-aware NJ merge of constraint trees.
 
-    Strategy: InPhyNet-style sibling-pair lookup; constraint trees mutated in
-    place (no deepcopy in the inner loop). If validity fails for all candidate
-    pairs at some step, relax constraints and pick the lowest-Q pair.
+    Strategy: sibling-pair lookup per constraint tree (see the module
+    docstring); constraint trees mutated in place (no deepcopy in the inner
+    loop). If validity fails for all candidate pairs at some step, relax
+    constraints and pick the lowest-Q pair.
     """
     state = _NJState(pdm, trees)
     n = state.n

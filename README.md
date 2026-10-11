@@ -159,3 +159,16 @@ limits of 0, 1, 2, 3, or higher and examine how log pseudo-likelihood improves
 as additional reticulations are allowed. These score profiles can inform
 manual selection of the reticulation count. Each search uses the ASTRAL tree
 restricted to the subset taxa as its starting tree.
+
+## References
+
+The merger's constraint-aware neighbor joining implements NJMerge, using the
+sibling-pair bookkeeping of InPhyNet:
+
+- Molloy, E.K., Warnow, T. (2018). NJMerge: A generic technique for scaling
+  phylogeny estimation methods and its application to species trees.
+  *Comparative Genomics (RECOMB-CG 2018)*, LNCS 11183, Springer.
+  https://doi.org/10.1007/978-3-030-00834-5_15
+- Kolbow, N., Kong, S., Solís-Lemus, C. (2025). A method for massively
+  scalable inference of phylogenetic networks. *bioRxiv*.
+  https://doi.org/10.1101/2025.05.05.652278
