@@ -162,9 +162,6 @@ restricted to the subset taxa as its starting tree.
 
 ## References
 
-The merger's constraint-aware neighbor joining implements NJMerge, using the
-sibling-pair bookkeeping of InPhyNet:
-
 - Molloy, E.K., Warnow, T. (2018). NJMerge: A generic technique for scaling
   phylogeny estimation methods and its application to species trees.
   *Comparative Genomics (RECOMB-CG 2018)*, LNCS 11183, Springer.
