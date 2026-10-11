@@ -8,17 +8,12 @@ division listed in that directory's `subnetworks_output_metadata.csv`:
 
   1. Restricts the gene trees to the division's leafset (plus the outgroup)
      and reroots each restricted tree at the outgroup.
-  2. Restricts the binary starting tree to the same leaf space. PhyloNet's
-     rearrangement moves reject a non-binary start, which is why the
-     blob-collapsed tree of blobs cannot be used here — pass the ASTRAL tree
-     estimated from the same gene trees (what the manuscript's experiments
-     used), or the binary tree from the first TREE-QMC pass, as
-     `--base-tree`.
+  2. Restricts the starting tree to the same set of taxa.
   3. Runs PhyloNet's maximum pseudo-likelihood search (InferNetwork_MPL) on
      that subproblem with the reticulation bound `--max-ret`.
   4. Collects "Inferred Network #1" from each PhyloNet output, prunes the
-     outgroup back off, and writes one newick per division to
-     `<run_dir>/<subgenes-out-dir>/subnets.txt` — the file the merger reads.
+     outgroup, and writes one newick per division to
+     `<run_dir>/<subgenes-out-dir>/subnets.txt`.
 
 Files inside `<run_dir>/<subgenes-out-dir>/`:
   subset<i>/leaf_subset.txt   the taxa of subset i (metadata row i-1)
@@ -27,9 +22,6 @@ Files inside `<run_dir>/<subgenes-out-dir>/`:
   subset<i>/subnet_ret<r>.txt inferred network for bound r, outgroup removed (every bound is kept)
   subset<i>/mpl_ret<r>.log    raw PhyloNet output for bound r
   subnets.txt                 line i = the network chosen for subset i (the merger's input)
-  inputs.json                 what every subnet_ret<r>.txt and subnets.txt were made from
-                              (gene trees, base tree, jar, metadata hashes; the bound per
-                              subset); a run is only skipped as done when this still matches
   mpl_runtimelog.txt          per-subset wall time + status, appended across calls
 
 Divisions coming from the non-blob part of the tree of blobs (`non_blob/`,
@@ -301,10 +293,6 @@ def combine_subnets(subgenes_dir, n_rows, divisions, outgroup='OUT'):
 
     One line per metadata row; rows not in `divisions` (too few leaves) are
     written blank so line numbers stay equal to subnet_idx.
-
-    Every subset must have its network: the merger indexes subnets.txt by
-    row, so a missing line would silently shift every later subset onto the
-    wrong leafset. A gap therefore aborts and leaves no subnets.txt behind.
     """
     out_path = os.path.join(subgenes_dir, 'subnets.txt')
     networks = []
