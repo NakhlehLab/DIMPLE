@@ -5,25 +5,25 @@ This file has two layers:
 
 1. Core placement algorithm (private + 3 public fns:
    find_reticulations, add_retics_greedily, add_all_reticulations).
-   For each input network the major displayed tree was extracted (keeping the
-   higher-probability parent per reticulation). The functions below identify
-   the dropped (minor) reticulation edges and find all valid placement
-   positions in the merged tree.
+   The merged base tree was built from one displayed tree per input network,
+   chosen by pseudolikelihood (select_displayed_trees), so for any given
+   reticulation the backbone may hold either its major or its minor parent.
+   The functions below read off which parental relationship the backbone
+   already holds, and find all valid placements for the other one.
 
 2. Pipeline entry point at the bottom (add_retics_from_inputs +
    collect_unique_retics): parses inputs_full.txt, groups retics across
    networks by signature, picks representatives, builds a PL scorer, and
    calls add_retics_greedily.
 
-For a reticulation with child subtree C:
-  - MAJOR parent (kept): already in the merged tree
-  - MINOR parent (dropped): had sibling subtree S in the original network
-
-The minor edge should be added from some edge in the merged tree to the edge
-above C. The candidate source edges are constrained: the minor parent's
-position in the network tells us which taxa were "above" it, so the new
+For a reticulation with child subtree C, each parent had a sibling subtree in
+the source network. One parent is already in the merged tree (the KEPT side,
+detected from C's current sibling in the backbone); the other must be added
+back. The new edge runs from some edge in the merged tree to the edge above
+C. The candidate source edges are constrained: the dropped parent's position
+in the source network tells us which taxa were its siblings, so the new
 reticulation edge should originate from an edge whose descendant leaves
-include the minor parent's sibling taxa.
+include those sibling taxa.
 """
 
 import re
@@ -47,10 +47,6 @@ from dimple.merger.merger_util import (
 def find_reticulations(network, used_major=True):
     """
     Find reticulations in a network and identify kept/dropped parents.
-
-    If used_major=True (default), the major (highest prob) parent was kept
-    in the displayed tree, so we add back the minor side.
-    If used_major=False, the minor parent was kept, so we add back the major side.
 
     Returns list of dicts with:
         retic_node, retic_leaves, major_parent, major_prob,
@@ -598,10 +594,6 @@ def add_retics_greedily(tree, networks, score_fn, used_major_list=None,
 def add_all_reticulations(tree, networks, score_fn=None, used_major_list=None):
     """
     Add back all missing reticulation edges from input networks.
-
-    used_major_list: optional list of bools, one per network. True means
-    the major displayed tree was used (add back minor side), False means
-    minor was used (add back major side). Defaults to all True.
 
     Returns list of (net_idx, retic_node, retic_info) for each added reticulation.
     """
