@@ -69,7 +69,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 from dimple.utils.network_util import (
     newick_to_nx, build_newick_from_graph, get_leafset,
     extract_subnetwork_by_leaves, contract_degree2_nodes,
-    clean_extended_newick, strip_branch_lengths,
+    clean_extended_newick, strip_branch_lengths, finalize_output_newick,
 )
 from dimple.merger.blob_merger import (
     get_blob_name, list_run_dirs, read_phylonet_subnets,
@@ -311,7 +311,7 @@ def _run(args):
                 f'outputs exist. Refusing to fall back to copying an unresolved '
                 f'TOB tree.')
         final_path = os.path.join(out_dir, 'merged_full.nwk')
-        nwk_out = strip_branch_lengths(build_newick_from_graph(T_tob))
+        nwk_out = finalize_output_newick(strip_branch_lengths(build_newick_from_graph(T_tob)))
         with open(final_path, 'w') as f:
             f.write(nwk_out + '\n')
         n_leaves = len(get_leafset(T_tob) - {'seed'})

@@ -19,7 +19,7 @@ import json
 import networkx as nx
 from dimple.utils.network_util import (
     newick_to_nx, build_newick_from_graph, get_leafset, contract_degree2_nodes,
-    clean_extended_newick, strip_branch_lengths,
+    clean_extended_newick, strip_branch_lengths, finalize_output_newick,
 )
 from dimple.merger.merger_util import (
     find_root, copy_with_unique_names, smallest_containing,
@@ -320,7 +320,7 @@ def merge(ds_dir, mode='full_merger', out_path=None, divisions_dir='dimple_out',
 
     T = contract_degree2_nodes(T)
 
-    nwk_out = strip_branch_lengths(build_newick_from_graph(T))
+    nwk_out = finalize_output_newick(strip_branch_lengths(build_newick_from_graph(T)))
     if out_path is None:
         out_path = f'{ds_dir}/{divisions_dir}/merged_full_{mode}.nwk'
     with open(out_path, 'w') as f:

@@ -484,3 +484,26 @@ def strip_branch_lengths(newick):
     # Restore ::prob as :0::prob so parser reads it correctly
     s = re.sub(r'§§([\d.Ee+\-]+)', r':0::\1', s)
     return s
+
+
+_INTERNAL_LABEL = re.compile(r'\)([^(),;:#\[\]]+)')
+_HYBRID_TAG = re.compile(r'#[A-Za-z]\w*')
+
+
+def finalize_output_newick(newick):
+    """Prepare a network newick for output.
+
+    Drops the labels of ordinary internal nodes and renumbers hybrid nodes
+    #H1, #H2, ... in order of first appearance. Leaf labels, branch lengths
+    and inheritance probabilities are unchanged.
+    """
+    s = _INTERNAL_LABEL.sub(')', newick)
+    renamed = {}
+
+    def _renumber(m):
+        tag = m.group(0)
+        if tag not in renamed:
+            renamed[tag] = f'#H{len(renamed) + 1}'
+        return renamed[tag]
+
+    return _HYBRID_TAG.sub(_renumber, s)
