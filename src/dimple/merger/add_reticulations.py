@@ -579,7 +579,7 @@ def add_retics_greedily(tree, networks, score_fn, used_major_list=None,
                   f"minor={retic['minor_prob']:.4f}", flush=True)
             added.append((net_idx, rn, retic))
             # The tree changed, so a later reticulation may now insert its other
-            # side: redo the dependency order for what is left (codex review).
+            # side: redo the dependency order for what is left.
             if pending:
                 pending = _sort_retics(pending, tree=tree)
             retic_counter += 1

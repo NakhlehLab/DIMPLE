@@ -69,7 +69,7 @@ def graft_at_parent(T, sub_G, parent, used_names):
     return new_r, used_names
 
 
-def load_blob_source_items(ds_dir, divisions_dir='divisions3'):
+def load_blob_source_items(ds_dir, divisions_dir='dimple_out'):
     src_items = {}
     div3 = f'{ds_dir}/{divisions_dir}'
     for d in sorted(os.listdir(div3)):
@@ -105,7 +105,7 @@ def find_blob_tob_node(T, blob_name, blob_tob_leaves):
     return smallest_containing(T, blob_tob_leaves)
 
 
-def load_blob_tob_leaves(ds_dir, divisions_dir='divisions3'):
+def load_blob_tob_leaves(ds_dir, divisions_dir='dimple_out'):
     """Return blob_name -> the blob's ORIGINAL TOB subtree leafset (from
     blob_group rows' all_leaves field across all item_mappings)."""
     result = {}
@@ -127,10 +127,10 @@ def load_blob_tob_leaves(ds_dir, divisions_dir='divisions3'):
     return result
 
 
-def merge(ds_dir, mode='gt', out_path=None, divisions_dir='divisions3',
+def merge(ds_dir, mode='full_merger', out_path=None, divisions_dir='dimple_out',
           tob_path=None, metadata_dir=None):
     if tob_path is None:
-        tob_path = f'{ds_dir}/tob_iqtree/tob_iqtree_reroot.tre'
+        raise ValueError('merge() needs tob_path: the TOB newick rooted at the outgroup')
     combined_dir = f'{ds_dir}/{divisions_dir}/combined_blobs_{mode}'
     if not os.path.isdir(combined_dir):
         print(f'ERROR: {combined_dir} not found'); return None

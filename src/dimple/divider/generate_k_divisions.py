@@ -92,7 +92,6 @@ def group_leafsets_by_index_groups(items, index_groups):
 def bin_pack_items(item_indices, weights, max_size, min_size=3):
     shuffled = list(item_indices)
     random.shuffle(shuffled)
-    print(f"  DEBUG bin_pack: n_items={len(shuffled)}, order_sizes={[weights[i] for i in shuffled]}")
 
     bins = []
     bin_sizes = []
@@ -449,7 +448,7 @@ def _build_row(subnet_idx, key, leafset, info, allocation_results=None, T=None,
 def _write_rows_to_folder(folder, rows, allocation_results=None, T=None,
                            cut_siblings=None):
     """Write rows (list of (key, leafset, info)) to folder/subnetworks_output_metadata.csv.
-    Leafset-only variant: no GT network is required; only metadata is written.
+    Only metadata is written.
     """
     os.makedirs(folder, exist_ok=True)
     csv_path = os.path.join(folder, 'subnetworks_output_metadata.csv')
@@ -592,7 +591,6 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
     os.makedirs(output_dir, exist_ok=True)
 
     # --- Phase timing: leafset formation ---
-    # No GT network is consumed; this variant produces only per-blob leafsets.
     _t0 = time.perf_counter()
     _ru0 = resource.getrusage(resource.RUSAGE_SELF)
     pending_writes = []  # list of (folder, rows, allocation_results, T_for_lookup, cut_siblings)
@@ -895,7 +893,7 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
     print(f"\n  Leafset phase: wall={_leafset_wall:.3f}s  cpu={_leafset_cpu:.3f}s  "
           f"maxRSS={_leafset_max_rss_kb}KB -> {rt_path}")
 
-    # --- Flush deferred writes (metadata only — no GT network needed). ---
+    # --- Flush deferred writes (metadata only). ---
     for folder, rows, alloc_res, T_for_lookup, cut_siblings in pending_writes:
         _write_rows_to_folder(folder, rows,
                               allocation_results=alloc_res,
@@ -903,7 +901,7 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
                               cut_siblings=cut_siblings)
     print(f"\n  Wrote {len(non_blob_rows)} non_blob rows to {non_blob_dir}")
 
-    # --- TOB-induced non_blob subtrees (consumed by inphynet + full_merger). ---
+    # --- TOB-induced non_blob subtrees (read by the merger). ---
     tob_subnets = _extract_non_blob_tob_subnets(non_blob_rows, T.copy())
     tob_path = os.path.join(non_blob_dir, _NON_BLOB_TOB_FILE)
     with open(tob_path, 'w') as f:
@@ -941,7 +939,7 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Generate k divisions (v3, leafset-only — no GT network required)')
+        description='Generate k divisions of a tree of blobs')
     parser.add_argument('--tob', type=str, required=True,
                         help='Path to TOB tree newick (rerooted with the outgroup as root).')
     parser.add_argument('--output_dir', type=str, default='dimple_out',
@@ -953,8 +951,8 @@ if __name__ == "__main__":
                         help='Comma-separated outgroup leaf labels to PRUNE from '
                              'the TOB before division. Lenient — any label not in '
                              'the tree is silently skipped. Default: OUT '
-                             '(works for simulated datasets). For a clade, list '
-                             'all candidates, e.g. WRSL,QWRA,XDLL,PRIQ,UTRE.')
+                             '. For an outgroup clade, list all of its labels, '
+                             'e.g. OUT1,OUT2,OUT3.')
     args = parser.parse_args()
 
     with open(args.tob, 'r') as f:

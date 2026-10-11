@@ -24,7 +24,6 @@ Based on NJMerge from:
     species trees.
 """
 
-import os
 import sys
 from copy import deepcopy
 
@@ -347,21 +346,14 @@ def _newick_join(left_subnet_nwk, right_subnet_nwk):
     return f'({left_subnet_nwk},{right_subnet_nwk})'
 
 
-class NoValidJoin(RuntimeError):
-    """Raised instead of relaxing, when a state sets fail_on_no_join."""
-
-
-def merge_trees_via_nj(pdm, trees, verbose=False, state_cls=None):
+def merge_trees_via_nj(pdm, trees, verbose=False):
     """Overlap-aware NJ merge of constraint trees.
 
     Strategy: InPhyNet-style sibling-pair lookup; constraint trees mutated in
     place (no deepcopy in the inner loop). If validity fails for all candidate
     pairs at some step, relax constraints and pick the lowest-Q pair.
-
-    state_cls lets a variant supply its own _NJState (e.g. one that adds a
-    between-constraint conflict check). Default behaviour is unchanged.
     """
-    state = (state_cls or _NJState)(pdm, trees)
+    state = _NJState(pdm, trees)
     n = state.n
     n_relax = 0
     join_counter = 0
@@ -382,19 +374,10 @@ def merge_trees_via_nj(pdm, trees, verbose=False, state_cls=None):
             if not state.violates(a, b):
                 chosen = (i, j); break
         if chosen is None:
-            if getattr(state, 'fail_on_no_join', False):
-                raise NoValidJoin(
-                    f'no join satisfies the constraints with {n} taxa left')
             # Relax constraints — pick the lowest-Q pair regardless
             n_relax += 1
             qv, i, j = Q_pairs[0]
             chosen = (i, j)
-            # A state may implement relax_for() to retire only the constraints
-            # that actually blocked this pair, instead of letting join() force
-            # a contraction through every tree. No-op when absent.
-            relax_for = getattr(state, 'relax_for', None)
-            if relax_for is not None:
-                relax_for(state.labels[i], state.labels[j])
 
         i, j = chosen
         a = state.labels[i]; b = state.labels[j]
@@ -464,16 +447,13 @@ def run_overlap_njmerge(newick_list, dm, outgroup_distances=None,
         REQUIRED. Per-real-taxon distance to the synthetic OUT outgroup.
         Used to bias NJ to attach OUT toward the TOB-parent direction so the
         resulting blob backbone is rooted consistent with the TOB. Every real
-        taxon in `newick_list` ∩ `dm.index` must be present. Passing None
-        raises ValueError — the legacy `max(dmat)*2` fallback was removed
-        because it produced TOB-inconsistent rooting.
+        taxon in `newick_list` ∩ `dm.index` must be present.
     """
     if outgroup_distances is None:
         raise ValueError(
-            "run_overlap_njmerge requires outgroup_distances; the legacy "
-            "'max(dmat)*2 for all taxa' default has been removed because it "
-            "produced TOB-inconsistent rooting. Pass per-taxon distances "
-            "(e.g. mean DM distance to TOB-external sibling leaves)."
+            "run_overlap_njmerge requires outgroup_distances: per-taxon "
+            "distances to the outgroup (e.g. mean gene-tree distance to the "
+            "TOB-external sibling leaves)."
         )
     trees = []
     all_taxa = set()
@@ -486,12 +466,11 @@ def run_overlap_njmerge(newick_list, dm, outgroup_distances=None,
     if required_taxa is not None:
         all_taxa |= {t for t in required_taxa if t and not t.startswith('#')}
 
-    # Silently dropping a label that is not in the matrix hides two real
+    # Silently dropping a label that is not in the matrix would hide two real
     # failures: a taxon lost to the compatibility filter, and a label that
     # parsed differently from the one the matrix is keyed on (dendropy
     # rewrites unquoted underscores to spaces unless preserve_underscores).
-    # Both used to surface far downstream as an AttributeError inside
-    # reroot_at_edge. Fail here instead, naming the labels.
+    # Fail here, naming the labels.
     absent = sorted(t for t in all_taxa if t not in dm.index)
     if absent:
         sample = sorted(dm.index)[:3]
@@ -526,19 +505,13 @@ def run_overlap_njmerge(newick_list, dm, outgroup_distances=None,
     # OUT is carried in the DISTANCE MATRIX only -- it is deliberately NOT
     # attached to any constraint tree.
     #
-    # The two rooting signals do different jobs. `outgroup_distances` is soft:
-    # it shifts the Q-matrix so NJ prefers to join OUT toward the TOB-parent
-    # direction, and the data can overrule it. Grafting OUT under
-    # `trees[0].seed_node` was hard: it became a topological constraint
-    # enforced through `violates()` like any other cherry, derived from that
-    # one tree's STORED root. Since the constraint roots are arbitrary (the
-    # stored trees are unifurcating, and `_contract_siblings` leaves one or
-    # two children depending on argument order), that constraint had no
-    # biological justification, and it made the output depend on which
-    # rerooting of an identical unrooted constraint happened to be on disk:
-    #
-    #     ((a,b),(c,d));    ->  ((a,b),(c,d));
-    #     (a,(b,(c,d)));    ->  (a,(b,(c,d)));      same unrooted tree
+    # `outgroup_distances` is a soft rooting signal: it shifts the Q-matrix so
+    # NJ prefers to join OUT toward the TOB-parent direction, and the data can
+    # overrule it. Attaching OUT to a constraint tree would instead make it a
+    # hard topological constraint enforced through `violates()`, derived from
+    # that tree's stored root; the constraint trees are unrooted in meaning,
+    # so their stored roots carry no information and must not shape the
+    # output.
     #
     # OUT is in `pdm` but in no tree's leaf set, so `violates()` never
     # constrains it and `join()` treats it as a no-op tree-side; it joins
@@ -552,51 +525,13 @@ def run_overlap_njmerge(newick_list, dm, outgroup_distances=None,
     return tree_to_newick(merged)
 
 
-def _compat_greedy(newick_list):
-    """First-fit greedy compatibility filter (the older logic)."""
-    selected_nwks = []
-    selected_trees = []
-    for nwk in newick_list:
-        try:
-            candidate = dendropy.Tree.get(data=clean_extended_newick(nwk),
-                                          schema='newick',
-                                          preserve_underscores=True)
-        except Exception:
-            continue
-        conflicts = False
-        for sel_tree in selected_trees:
-            t1 = deepcopy(candidate); t2 = deepcopy(sel_tree)
-            if are_two_trees_incompatible(t1, t2):
-                conflicts = True
-                break
-        if not conflicts:
-            selected_nwks.append(nwk)
-            selected_trees.append(candidate)
-    return selected_nwks
-
-
-def select_compatible_subset(newick_list, strategy=None):
-    """Pick a set of pairwise-compatible trees from newick_list.
-
-    Strategy: 'maxclique' (default) chooses the LARGEST clique in the
-    compatibility graph. 'greedy' uses first-fit. Both use the same
-    `are_two_trees_incompatible` bipartition check.
-
-    Default can be overridden via env var DIMPLE_COMPAT_FILTER (greedy|maxclique).
+def select_compatible_subset(newick_list):
+    """Pick a set of pairwise-compatible trees from newick_list: the LARGEST
+    clique in the compatibility graph, where two trees are adjacent when
+    `are_two_trees_incompatible` finds no conflicting bipartition.
     """
-    if strategy is None:
-        strategy = os.environ.get('DIMPLE_COMPAT_FILTER', 'maxclique')
-    if strategy not in ('greedy', 'maxclique'):
-        raise ValueError(f"strategy must be 'greedy' or 'maxclique', got {strategy!r}")
-
     if len(newick_list) <= 1:
         return newick_list
-
-    if strategy == 'greedy':
-        out = _compat_greedy(newick_list)
-        print(f"  Compatible subset (greedy): {len(out)}/{len(newick_list)} trees kept",
-              flush=True)
-        return out
 
     trees = []
     for nwk in newick_list:

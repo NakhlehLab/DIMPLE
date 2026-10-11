@@ -3,7 +3,7 @@
 PhyloNet subnet → DIMPLE merger pipeline, one divisions dir at a time.
 
 Takes a divisions layout where each blob lives in its own subdir
-(e.g. divisions_final_phylonet/blob00/run_000/subgenes-out/subnets.txt).
+(e.g. dimple_out/blob00/run_000/subgenes-out/subnets.txt).
 Per-blob, it:
 
   1. Collects the PhyloNet subnets across all runs of that blob.
@@ -14,12 +14,7 @@ Per-blob, it:
   4. Saves base_tree.nwk and merged_network.nwk inside the blob dir.
 
 Usage:
-    conda run -n phylo-env python -u -m dimple.merger.blob_merger \
-        data/division_iqtree_tob/lvl2/n05/divisions_final_phylonet
-
-Gene trees default to `<parent_of_divisions_dir>/1k_iqtree_reroot.txt` (so for
-the example above that's data/division_iqtree_tob/lvl2/n05/1k_iqtree_reroot.txt).
-Override with --gene-trees if needed.
+    python -u -m dimple.merger.blob_merger dimple_out --gene-trees gene_trees.tre
 """
 
 import os
@@ -42,7 +37,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from dimple.utils.network_util import (
-    newick_to_nx, get_leafset, strip_branch_lengths, clean_extended_newick,
+    newick_to_nx, get_leafset, strip_branch_lengths,
 )
 from dimple.merger.merger_util import (
     find_reticulations as find_retics_with_sig,
@@ -298,18 +293,10 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
 
     # 2. DT-select
     t0 = time.time()
-    try:
-        sel, _ = select_displayed_trees(
-            all_subnets, gene_tree_file=gene_trees)
-        if verbose:
-            print(f'  DT-select: {len(sel)} trees from {len(all_subnets)} subnets',
-                  flush=True)
-    except Exception as e:
-        # A crash is not "no reticulate input": fail unless the tree-only fallback is enabled.
-        print(f'  DT-select failed ({e})', flush=True)
-        if not os.environ.get('DIMPLE_ALLOW_TREE_FALLBACK') == '1':
-            raise
-        sel = [clean_extended_newick(s) for s in all_subnets if '#H' not in s]
+    sel, _ = select_displayed_trees(all_subnets, gene_tree_file=gene_trees)
+    if verbose:
+        print(f'  DT-select: {len(sel)} trees from {len(all_subnets)} subnets',
+              flush=True)
     timings['dt_select'] = time.time() - t0
 
     # 3. Compatible subset
@@ -341,19 +328,10 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
 
     # 5. Orientation-aware retic addition (real PL)
     t0 = time.time()
-    try:
-        final_nwk, n_added = add_retics_from_inputs(
-            base_nwk, inputs_full_path, gene_trees,
-            verbose=verbose)
-        if verbose:
-            print(f'  Retics added: {n_added}', flush=True)
-    except Exception as e:
-        # A crash is not "no reticulation accepted": fail unless the tree-only fallback is enabled.
-        print(f'  add_retics failed: {e}', flush=True)
-        if not os.environ.get('DIMPLE_ALLOW_TREE_FALLBACK') == '1':
-            raise
-        final_nwk = base_nwk
-        n_added = 0
+    final_nwk, n_added = add_retics_from_inputs(
+        base_nwk, inputs_full_path, gene_trees, verbose=verbose)
+    if verbose:
+        print(f'  Retics added: {n_added}', flush=True)
     timings['retics'] = time.time() - t0
 
     if verbose:
@@ -451,21 +429,13 @@ def process_blob(blob_dir, gene_trees, subnet_source, verbose=True, dm=None):
 # Main
 # ---------------------------------------------------------------------------
 
-def _default_gene_trees(divisions_dir):
-    """Auto-detect 1k_iqtree_reroot.txt in the dataset dir (parent of
-    divisions_dir)."""
-    return os.path.join(os.path.dirname(os.path.abspath(divisions_dir)),
-                        '1k_iqtree_reroot.txt')
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('divisions_dir',
-                    help='Dir containing blobXX subdirs (e.g. '
-                         'data/.../n05/divisions_final_phylonet)')
-    ap.add_argument('--gene-trees', default=None,
-                    help="Gene trees file for PL scoring / DM. Defaults to "
-                         "'<parent_of_divisions_dir>/1k_iqtree_reroot.txt'.")
+                    help='Directory containing the blob* subdirectories '
+                         'written by the divider')
+    ap.add_argument('--gene-trees', required=True,
+                    help='Gene trees file for PL scoring and the distance matrix.')
     ap.add_argument('--subnet-source', default='subgenes-out/subnets.txt',
                     help='Subpath within each run dir to read subnets from')
     ap.add_argument('--blob-prefix', default='blob',
@@ -476,8 +446,6 @@ def main():
         print(f'ERROR: {args.divisions_dir} is not a directory')
         sys.exit(1)
 
-    if args.gene_trees is None:
-        args.gene_trees = _default_gene_trees(args.divisions_dir)
     if not os.path.exists(args.gene_trees):
         print(f'ERROR: gene trees file not found: {args.gene_trees}')
         sys.exit(1)
@@ -549,8 +517,6 @@ def main():
         pct = 100 * step_totals[k] / st_total if st_total > 0 else 0
         print(f'  {k:<10}: {step_totals[k]:7.2f}s ({pct:5.1f}%)', flush=True)
     print(f'\nWall-clock total: {wall_elapsed:.2f}s ({wall_elapsed/60:.2f} min)',
-          flush=True)
-    print(f'(Peak memory is reported by /usr/bin/time -v in stderr.txt.)',
           flush=True)
 
 

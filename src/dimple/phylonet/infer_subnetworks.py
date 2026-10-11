@@ -360,7 +360,7 @@ def _read_stamp(path):
 @contextmanager
 def _locked(subgenes_dir):
     """Serialise read-modify-write of inputs.json across invocations that
-    work on the same run at the same time (e.g. per-subset cluster jobs)."""
+    work on the same run at the same time (e.g. one invocation per subset)."""
     os.makedirs(subgenes_dir, exist_ok=True)
     with open(os.path.join(subgenes_dir, STAMP_FILENAME + '.lock'), 'w') as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)

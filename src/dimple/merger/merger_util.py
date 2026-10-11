@@ -20,7 +20,6 @@ from dimple.utils.network_util import (
 
 # ---------------------------------------------------------------------------
 # Shared helper used by add_pruned_subtree.py and merge_to_tob.py
-# (was duplicated identically in both files in DIMPLE2)
 # ---------------------------------------------------------------------------
 
 def smallest_containing(T, leaves):
@@ -36,7 +35,7 @@ def smallest_containing(T, leaves):
 
 
 # ---------------------------------------------------------------------------
-# From dimple.merger.nonoverlap_merger.merger_blob_util
+# Graph grafting helpers
 # Used by: add_pruned_subtree.py, merge_to_tob.py
 # ---------------------------------------------------------------------------
 
@@ -93,8 +92,8 @@ def copy_with_unique_names(subgraph, target_graph, root, used_names):
 
 
 # ---------------------------------------------------------------------------
-# From dimple.merger.nonoverlap_merger.nonoverlap_merger
-# Used by: blob_merger.py, add_retics_from_inputs.py
+# Merger inputs file
+# Used by: blob_merger.py, add_reticulations.py
 # ---------------------------------------------------------------------------
 
 def parse_inputs_file(filepath):
@@ -133,9 +132,9 @@ def parse_inputs_file(filepath):
 
 
 # ---------------------------------------------------------------------------
-# From dimple.select_networks.identify_reticulations
+# Reticulation identity
 # Used by: blob_merger.py (find_reticulations, retics_are_same),
-#          add_retics_from_inputs.py (find_reticulations, identify_unique_reticulations)
+#          add_reticulations.py (find_reticulations, identify_unique_reticulations)
 # ---------------------------------------------------------------------------
 
 def get_direct_branches(G, node):
@@ -278,13 +277,13 @@ def identify_unique_reticulations(retics_list):
 
 
 # ---------------------------------------------------------------------------
-# From dimple.merger.overlapmerge.pl_scorer
-# Pseudolikelihood scorer: precomputes gene-tree triple frequencies once,
-# then scores each candidate tree by counting how many observed triples it
-# displays. For a tree without branch lengths, each triple has probability
-# 1 if displayed or 0 if not. Score = fraction NOT displayed (lower = better).
+# Triple-based pseudolikelihood scorer: precomputes gene-tree triple
+# frequencies once, then scores each candidate tree by counting how many
+# observed triples it displays. For a tree without branch lengths, each triple
+# has probability 1 if displayed or 0 if not. Score = fraction NOT displayed
+# (lower = better).
 #
-# Used by: select_displayed_trees.py, add_retics_from_inputs.py
+# Used by: select_displayed_trees.py
 # ---------------------------------------------------------------------------
 
 def _extract_triples_from_dendropy(tree_str, leaf_set):
@@ -428,11 +427,10 @@ def load_triple_cache(cache_path, leaf_set=None):
 
 
 # ---------------------------------------------------------------------------
-# From dimple.merger.overlapmerge.PL_score_real
-# Real pseudolikelihood scorer using phynetpy's MPL (multispecies network
+# Pseudolikelihood scorer using phynetpy's MPL (multispecies network
 # coalescent). Score = negated log pseudo-likelihood. Lower = better.
 #
-# Used by: add_retics_from_inputs.py
+# Used by: add_reticulations.py
 # ---------------------------------------------------------------------------
 
 from dimple.utils.network_util import build_newick_from_graph

@@ -15,13 +15,13 @@ retic (as sibling of the retic's single child) so the pruned subtree lands
 INSIDE the retic clade — never orphaned outside it.
 
 Usage (from project root):
-    conda run -n phylo-env python -u -m dimple.merger.add_pruned_subtree \\
-        --metadata data/division_iqtree_tob/lvl2/n02/divisions3/non_blob/subnetworks_output_metadata.csv \\
-        --non-blob-nwks data/division_iqtree_tob/lvl2/n02/divisions3/non_blob/subnetworks_output.txt \\
-        --blob data/division_iqtree_tob/lvl2/n02/divisions3/gt_subnets/node_1+node_12+node_4_ground_truth.nwk \\
+    python -u -m dimple.merger.add_pruned_subtree \\
+        --metadata dimple_out/non_blob/subnetworks_output_metadata.csv \\
+        --non-blob-nwks dimple_out/full_merger/tob_prune_subnets.txt \\
+        --blob dimple_out/full_merger/blob00/merged_network.nwk \\
         --blob-name node_1+node_12+node_4 \\
-        --tob data/division_iqtree_tob/lvl2/n02/tob_iqtree/tob_iqtree_reroot.tre \\
-        --out /tmp/n02_node1_with_pruned.nwk
+        --tob tob_rooted.tre \\
+        --out dimple_out/full_merger/combined_blobs/node_1+node_12+node_4_combined.nwk
 """
 import os
 import sys
@@ -236,10 +236,9 @@ def add_pruned(blob_nwk, pruned_rows, T_orig=None):
         G.remove_node('OUT')
         G = contract_degree2_nodes(G)
 
-    # Remove blob leaves that will be re-attached via prunes. The phylonet-
-    # inferred blob may have been built from an earlier division layout that
-    # included leaves now reassigned to a prune by the current metadata.
-    # Without this step those leaves end up duplicated in the combined output.
+    # Remove any blob leaves that the metadata assigns to a pruned subtree;
+    # they are re-attached with that subtree below. Without this step those
+    # leaves would be duplicated in the combined output.
     prune_leaves_total = set()
     for p in pruned_rows:
         prune_leaves_total |= p.get('leaves', set())
@@ -295,8 +294,7 @@ def add_pruned(blob_nwk, pruned_rows, T_orig=None):
                     raise RuntimeError(
                         f"pruned_{p['idx']} (source_type={source_type}, "
                         f"cut={p['cut_edge']}): target {sorted(target)[:5]} "
-                        f"has no overlap with blob items — cannot attach. "
-                        f"No fallbacks allowed."
+                        f"has no overlap with blob items — cannot attach."
                     )
                 else:
                     mrca = smallest_containing(G, effective)

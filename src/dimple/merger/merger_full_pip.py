@@ -10,17 +10,18 @@ End-to-end given a single dataset:
   3. Combine             : run add_pruned_subtree per blob, attaching prune
                             subnets at MRCA of cut-time sibling leaves.
   4. Merge into TOB      : graft per-blob combined networks back into the
-                            iqtree TOB scaffold.
+                            TOB scaffold.
 
 Inputs:
-  divisions_dir          : <ds>/divisions_final_phylonet — has blob*/run_*/
-                            subgenes-out/subnets.txt (PhyloNet inferences).
-  --metadata-dir         : <ds>/divisions3_test (cut-time-siblings metadata).
-  --tob                  : iqtree TOB newick.
-  --gene-trees           : iqtree gene trees (default: <parent>/1k_iqtree_reroot.txt).
+  divisions_dir          : the divider's output directory, holding
+                            blob*/run_*/subgenes-out/subnets.txt (PhyloNet
+                            inferences) and non_blob/.
+  --metadata-dir         : division metadata (cut-time-siblings); defaults to
+                            divisions_dir.
+  --tob                  : TOB newick, rooted at the outgroup.
+  --gene-trees           : gene trees, one newick per line.
 
-This script is GT-FREE and does NOT perform any evaluation. It produces
-network newicks only.
+This script produces network newicks only.
 
 Outputs (all under <divisions_dir>/full_merger/):
   blob*/merged_network.nwk           — per-blob inferred network
@@ -35,16 +36,12 @@ Outputs (all under <divisions_dir>/full_merger/):
   combined_blobs/<blob>_combined.nwk — per-blob combined (with prunes attached)
   tob_prune_subnets.txt              — TOB-restricted prune newicks
   merged_full.nwk                    — final whole-network output
-  summary.tsv                        — per-blob inference summary (no evaluation)
-  pipeline_timings.json              — wall time for each of stages 1..4 + total
-  stdout.txt / stderr.txt            — wrapped /usr/bin/time -v logs (whole-
-                                       pipeline wall time + Maximum RSS)
+  summary.tsv                        — per-blob inference summary
+  pipeline_timings.json              — wall and CPU time for each stage + total
 
 Usage:
-    conda run -n phylo-env python -u -m \\
-        dimple.merger.merger_full_pip \\
-        data/division_iqtree_tob/lvl2/n00/divisions_final_phylonet \\
-        --metadata-dir data/division_iqtree_tob/lvl2/n00/divisions3_test
+    python -u -m dimple.merger.merger_full_pip dimple_out \\
+        --tob tob_rooted.tre --gene-trees gene_trees.tre
 """
 import os
 # Cap BLAS thread fan-out before any numpy/scipy/etc. import. OpenBLAS reads
@@ -65,7 +62,7 @@ import argparse
 import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# src/dimple/merger -> repo root is three levels up (four pointed at its parent)
+# src/dimple/merger -> repo root is three levels up
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..', '..', '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
@@ -114,11 +111,10 @@ def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
         subnets = read_phylonet_subnets(run_dir, subnet_source)
         if not subnets:
             return 'shortcut_empty', None
-        # True shortcut only when this single run has a SINGLE subnet (no
-        # merging needed). If the run has multiple subnets (one per retic
-        # count), fall through to the full pipeline so DT-select + NJ +
-        # add_retics produce a single coherent merged_network.nwk instead
-        # of the multi-line newick the shortcut used to emit.
+        # Shortcut only when this single run has a SINGLE subnet (no merging
+        # needed). If the run has multiple subnets, fall through to the full
+        # pipeline so DT-select + NJ + add_retics produce one coherent
+        # merged_network.nwk.
         if len(subnets) == 1:
             run_subnets = {runs[0]: [nwk for _, nwk in subnets]}
             inputs_full = os.path.join(blob_out_dir, 'inputs_full.txt')
@@ -223,22 +219,20 @@ def main():
                          '(default: dimple_out).')
     ap.add_argument('--metadata-dir', default=None,
                     help='Division metadata folder with cut-time-siblings. '
-                         'Defaults to the divisions_dir argument (since the '
-                         'metadata is merged into divisions_final_phylonet).')
+                         'Defaults to the divisions_dir argument.')
     ap.add_argument('--tob', required=True,
-                    help='iqtree TOB newick (required).')
+                    help='TOB newick rooted at the outgroup (required).')
     ap.add_argument('--gene-trees', required=True,
                     help='Gene trees file (required).')
     ap.add_argument('--subnet-source', default='subnets.txt',
                     help="File inside each blob*/run_*/<subgenes-out-dir>/ holding "
                          "the subnetworks (default: 'subnets.txt', PhyloNet's "
-                         "inferences). The true setting reads the divider's own "
-                         "networks instead, e.g. 'subnetworks_output.txt'.")
+                         "inferences).")
     ap.add_argument('--subgenes-out-dir', default='subgenes-out',
-                    help="Directory name under each blob*/run_*/ AND under "
-                         "non_blob/ that holds 'subnets.txt' (default: "
-                         "'subgenes-out'). Use this to point at re-runs like "
-                         "'subgenes-out-r1'.")
+                    help="Directory name under each blob*/run_*/ that holds "
+                         "the subnetwork file (default: 'subgenes-out'). Use "
+                         "this to select a different inference output "
+                         "directory.")
     ap.add_argument('--max-runs', type=int, default=None,
                     help='If set, only use the first K phylonet run dirs '
                          '(sorted by name) per blob. Default: use all runs.')
@@ -298,15 +292,13 @@ def _run(args):
     blobs = list_blobs_from_metadata(args.metadata_dir)
     if not blobs:
         # A fully binary TOB has no blob to reconstruct: the blob test found no
-        # reticulation anywhere, so DIMPLE's estimate for this replicate IS the
-        # TOB. Emit it directly, formatted as stage 4 would (branch lengths
-        # stripped), so the replicate yields a scoreable zero-reticulation
-        # network instead of no output at all.
+        # reticulation anywhere, so DIMPLE's estimate IS the TOB. Emit it
+        # directly, formatted as stage 4 would (branch lengths stripped), so
+        # the run yields a zero-reticulation network instead of no output.
         #
         # This is only valid when the TOB is genuinely binary. A multifurcated
-        # TOB with no blob metadata means the divider failed or its outputs were
-        # not transferred, which must stay an error rather than a silent
-        # passthrough of an unresolved tree.
+        # TOB with no blob metadata means the divider did not run, which must
+        # stay an error rather than a silent passthrough of an unresolved tree.
         tob_str = clean_extended_newick(open(args.tob).read().strip())
         T_tob = newick_to_nx(tob_str)
         multifurcations = [n for n in T_tob.nodes() if T_tob.out_degree(n) > 2]
@@ -315,9 +307,9 @@ def _run(args):
                 f'ERROR: no blobs found in metadata_dir {args.metadata_dir}, but '
                 f'the TOB has {len(multifurcations)} multifurcation(s) — it is not '
                 f'a resolved tree, so there is something to reconstruct and the '
-                f'divider evidently failed. Check that its non_blob/blob* outputs '
-                f'were generated and transferred correctly. Refusing to fall back '
-                f'to copying an unresolved TOB tree.')
+                f'divider evidently did not run. Check that its non_blob/blob* '
+                f'outputs exist. Refusing to fall back to copying an unresolved '
+                f'TOB tree.')
         final_path = os.path.join(out_dir, 'merged_full.nwk')
         nwk_out = strip_branch_lengths(build_newick_from_graph(T_tob))
         with open(final_path, 'w') as f:
@@ -330,9 +322,8 @@ def _run(args):
         return final_path
     print(f'blobs         → {len(blobs)}', flush=True)
 
-    # Stage timings (peak memory captured by /usr/bin/time -v wrapper for
-    # the whole pipeline; per-stage RSS would require separate time-wraps).
-    # CPU time uses os.times() so already-reaped subprocesses are included.
+    # Stage timings. CPU time uses os.times() so already-reaped subprocesses
+    # are included.
     stage_timings = {}
     pipeline_t0 = time.time(); pipeline_c0 = _cpu_now()
 
@@ -462,9 +453,7 @@ def _run(args):
                 f'ERROR: stage 3 (add_pruned_subtree) failed for blob '
                 f'{blob_name} (exit {r.returncode}). Refusing to continue '
                 f'to stage 4 — would produce a multifurcated merged_full.nwk '
-                f'where {blob_name} stays uncombined. Common cause: fork '
-                f'exhaustion under high parallelism. Re-run this dataset\'s '
-                f'merger with lower concurrency.')
+                f'where {blob_name} stays uncombined.')
     stage_timings['stage3_combine'] = time.time() - t3
     stage_timings['stage3_combine_cpu'] = _cpu_now() - c3
     print(f'  total stage-3 time: wall={stage_timings["stage3_combine"]:.2f}s '
@@ -475,13 +464,10 @@ def _run(args):
     # ------------------------------------------------------------------
     print(f'\n{"="*70}\n[stage 4] merge into TOB\n{"="*70}', flush=True)
     t4 = time.time(); c4 = _cpu_now()
-    # merge_to_tob expects ds_dir + divisions-dir-name.
-    # Our combined_blobs/ lives inside out_dir, not under <divisions_dir>/combined_blobs_<mode>/.
-    # Workaround: call merge_to_tob directly via merge() function.
+    # merge_to_tob.merge() locates the combined networks at
+    # <divisions_dir>/combined_blobs_<mode>/. Expose combined_blobs/ there
+    # through a temporary symlink for the duration of the call.
     from dimple.merger.merge_to_tob import merge as _merge_to_tob
-    # We'll point divisions_dir at out_dir's parent name and combined as subfolder.
-    # Simpler path: temporarily symlink combined_blobs → combined_blobs_full_merger
-    # under divisions_dir, run merge_to_tob with --mode full_merger, then clean up.
     link_name = f'combined_blobs_{args.out_name}'
     link_path = os.path.join(args.divisions_dir, link_name)
     if os.path.lexists(link_path):
@@ -536,8 +522,7 @@ def _run(args):
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
-    # Persist consolidated stage timings (peak memory captured by /usr/bin/time -v
-    # for the whole pipeline lives in stderr.txt — see "Maximum resident set size").
+    # Persist consolidated stage timings.
     timings_path = os.path.join(out_dir, 'pipeline_timings.json')
     with open(timings_path, 'w') as f:
         json.dump({
@@ -554,8 +539,7 @@ def _run(args):
             'pipeline_total':                stage_timings['pipeline_total'],
             'pipeline_total_cpu':            stage_timings['pipeline_total_cpu'],
             'note': 'wall = wall-clock seconds. cpu = user+system CPU including '
-                    'reaped subprocesses (os.times). Peak RSS for whole pipeline '
-                    'is in stderr.txt (Maximum resident set size).',
+                    'reaped subprocesses (os.times).',
         }, f, indent=2)
     print(f'\nstage timings → {timings_path}', flush=True)
     summary_tsv = os.path.join(out_dir, 'summary.tsv')

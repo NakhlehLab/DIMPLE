@@ -12,10 +12,6 @@ New flow:
   4. Build mega-blobs: union blobs connected by non-blob, non-leaf internal
      nodes in the residual tree.
   5. Hand each mega-blob to heuristic_allocation (single shot, no recursion).
-
-Fixes Bug A (forbidden-edge set is computed on the original TOB, not the
-residual), Bug B/C/D (no re-extraction of sub-subnetwork; no handoff of a
-child's leafset entry to its parent).
 """
 
 import os
@@ -44,8 +40,7 @@ def prune_orphan_internals(H, real_taxa, outgroup_set=frozenset({'OUT'})):
     without cleanup, get_leafset() treats it as a fake leaf.
 
     `outgroup_set` is a set of leaf labels that act as rooting markers and
-    should not be treated as orphans. Defaults to {'OUT'} for backwards
-    compatibility with simulated datasets.
+    should not be treated as orphans. Defaults to {'OUT'}.
 
     After removing orphans, contracts any degree-2 internals that resulted.
     Repeats until stable.
@@ -102,7 +97,7 @@ def find_direct_child_blobs_dict(blob_list, tob_tree):
 
 
 # ---------------------------------------------------------------------------
-# Forbidden edges (fixes Bug A)
+# Forbidden edges
 # ---------------------------------------------------------------------------
 
 def compute_forbidden_edges(T, all_blobs):
@@ -594,7 +589,7 @@ def greedy_recursive_cuts(G, refined_cuttable_edges_list, num_cuts):
 # TOB-induced subtrees for non_blob rows
 #
 # The v3 divider writes <div>/non_blob/tob_subnets.txt — one newick per row in
-# subnet_idx order, where each newick is the iqtree TOB restricted to that row's
+# subnet_idx order, where each newick is the TOB restricted to that row's
 # `all_leaves` (with degree-2 nodes contracted). The merger reads this file
 # instead of re-deriving it from metadata + TOB.
 #
