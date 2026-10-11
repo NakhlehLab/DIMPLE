@@ -1,8 +1,8 @@
 '''
-Division algorithm v3 — driver (per-blob output layout).
+Division driver (per-blob output layout).
 
-Same algorithm as v2 (isolated mega-blob + orphan-internals cleanup). Output
-format splits by (mega-)blob and only runs the allocator k times for blobs
+Isolates each mega-blob, prunes it, and allocates its items into subsets. The
+output splits by (mega-)blob and only runs the allocator k times for blobs
 where the item total exceeds SIZE.
 
 Layout:
@@ -57,15 +57,15 @@ from dimple.utils.division_util import (
     mega_blob_items,
     mega_blob_name,
     isolate_mega_blobs,
-    final_cut_edges as _v1_final_cut_edges,
-    greedy_recursive_cuts as _v1_greedy_recursive_cuts,
+    final_cut_edges as _final_cut_edges,
+    greedy_recursive_cuts as _greedy_recursive_cuts,
     extract_from_tob_graph as _extract_non_blob_tob_subnets,
     NON_BLOB_TOB_FILE_NAME as _NON_BLOB_TOB_FILE,
 )
 
 
 # ---------------------------------------------------------------------------
-# Helpers reused verbatim from v1
+# Allocation helpers
 # ---------------------------------------------------------------------------
 
 def group_indices_by_value(s):
@@ -281,10 +281,10 @@ def cut_large_group(T, leafset, SIZE=12, min_size=3):
     num_cuts = max(1, len(leafset) // SIZE)
     all_edges = list(subtree.edges())
     # relaxed=True: drop the out_degree<=2 filter (the pruned subtree has no blobs anyway)
-    refined = _v1_final_cut_edges(subtree, all_edges, relaxed=True)
+    refined = _final_cut_edges(subtree, all_edges, relaxed=True)
 
     if refined and num_cuts > 0:
-        final_cut = _v1_greedy_recursive_cuts(subtree, refined, num_cuts)
+        final_cut = _greedy_recursive_cuts(subtree, refined, num_cuts)
         result = leafsets_after_cuts(subtree, final_cut)
         out = {}
         for key, sub in result.items():
@@ -575,7 +575,7 @@ def process_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_output
 def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_output",
                                 k=15, seed=0, outgroup_leaves=("OUT",)):
     """
-    v3 process_division: per-blob output layout.
+    Generate the per-blob output layout.
 
     Layout:
       output_dir/
@@ -759,15 +759,15 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
                                    'mode': 'single'})
             continue
 
-        # Small enough: use v2-style strategy (smallest_first + random+reject) FIRST,
-        # then fill remaining slots with enumeration to guarantee v3 >= v2.
+        # Small enough: heuristic allocation (smallest_first, then random+reject)
+        # FIRST, then fill remaining slots by enumerating the partition space.
         if N <= ENUM_MAX_ITEMS:
             print(f"\n  [{blob_dir_name}] {name}: {N} items, total={total_size}, "
-                  f"hybrid v2 strategy + enumeration fill")
+                  f"heuristic allocation + enumeration fill")
             seen_fps = set()
             allocations = []  # list of (division, item_mapping) in intended run order
 
-            # --- Phase 1: v2 strategy (smallest_first + random) ---
+            # --- Phase 1: heuristic allocation (smallest_first + random) ---
             for i in range(k):
                 random.seed(seed + i)
                 strat = "smallest_first" if i == 0 else "random"
@@ -780,8 +780,8 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
                 seen_fps.add(fp)
                 allocations.append((division, item_mapping))
 
-            n_v2 = len(allocations)
-            print(f"    phase 1 (v2 strategy): {n_v2} distinct allocations")
+            n_heur = len(allocations)
+            print(f"    phase 1 (heuristic): {n_heur} distinct allocations")
 
             # --- Phase 2: enumerate remaining space, add any unseen partitions ---
             if len(allocations) < k:
@@ -804,7 +804,7 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
                         continue
                     seen_fps.add(fp)
                     allocations.append((division, item_mapping))
-                n_enum = len(allocations) - n_v2
+                n_enum = len(allocations) - n_heur
                 print(f"    phase 2 (enumeration fill): +{n_enum} allocations "
                       f"(total enum space: {len(partitions)})")
 
@@ -823,18 +823,17 @@ def _generate_division_leafsets(tob_tree_str, SIZE=12, output_dir="division_outp
                 pending_writes.append((run_dir, rows, alloc_res, None, None))
                 blob_allocations_first_run.setdefault(name, alloc_res[name])
                 accepted += 1
-            print(f"    => {accepted} distinct run(s) (v2:{n_v2} + enum-fill:{accepted-n_v2})")
+            print(f"    => {accepted} distinct run(s) (heuristic:{n_heur} + enum-fill:{accepted-n_heur})")
             blob_summaries.append({'name': name, 'blob_dir': blob_dir_name,
                                    'n_items': N, 'total_size': total_size, 'n_runs': accepted,
                                    'mode': 'hybrid'})
             continue
 
-        # Large case: random + reject with early termination on consecutive duplicates
+        # Large case: k random+reject attempts, deduplicated by fingerprint.
         print(f"\n  [{blob_dir_name}] {name}: {N} items > {ENUM_MAX_ITEMS}, "
-              f"using random+reject with early-stop")
+              f"using random+reject")
         seen_fingerprints = set()
         accepted = 0
-        # Mirror v2 exactly: run k attempts, dedupe by fingerprint. No early-stop.
         for i in range(k):
             run_seed = seed + i
             random.seed(run_seed)

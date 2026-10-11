@@ -39,7 +39,7 @@ sys.setrecursionlimit(200000)
 
 
 # =============================================================================
-# Utility functions (kept from original overlap_njmerge.py)
+# Utility functions
 # =============================================================================
 
 def matrix_to_dendropy_pdm(dmat, taxa):

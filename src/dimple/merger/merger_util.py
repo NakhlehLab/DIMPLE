@@ -335,9 +335,8 @@ def _extract_triples_from_nx(tree):
     all_leaves = set(n for n in tree.nodes if tree.out_degree(n) == 0 and n != 'seed')
     triples = set()
 
-    # Descendant leaf set of every node in ONE postorder pass. The previous
-    # version called nx.descendants() per node -- O(n) each, O(n^2) overall --
-    # and computed a topological sort it then discarded.
+    # Descendant leaf set of every node in ONE postorder pass. Calling
+    # nx.descendants() per node would be O(n) each, O(n^2) overall.
     try:
         order = list(nx.topological_sort(tree))
     except nx.NetworkXUnfeasible:
@@ -355,8 +354,8 @@ def _extract_triples_from_nx(tree):
 
     # Emit each triple once, at v = MRCA(a,b) -- the pairs whose MRCA is exactly
     # v are those straddling two different children of v. Identical output to
-    # the all-pairs-below-v form, without the re-emission that made it O(n^4) on
-    # caterpillars. See the note in _extract_triples_from_dendropy.
+    # the all-pairs-below-v form, without the re-emission that would make it
+    # O(n^4) on caterpillars. See the note in _extract_triples_from_dendropy.
     for v in tree.nodes:
         if v == 'seed':
             continue
@@ -603,8 +602,8 @@ def compute_dm_full(gene_trees_file, verbose=False):
     Computing this once per dataset instead of once per blob removes the
     merger's dominant cost. `compute_dm` builds a full N x N
     phylogenetic_distance_matrix() for every gene tree -- O(G * N^2) -- and
-    that work was previously repeated for each blob even though every blob
-    reads a sub-block of the same matrix.
+    repeating that per blob would redo the same work for each one, since every
+    blob reads a sub-block of the same matrix.
     """
     shared_ns = dendropy.TaxonNamespace()
     trees = TreeList.get(data=open(gene_trees_file).read(), schema='newick',

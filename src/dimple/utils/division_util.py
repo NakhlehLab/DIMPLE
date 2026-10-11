@@ -1,7 +1,7 @@
 """
-Division algorithm v2 helpers.
+Division helpers.
 
-New flow:
+Flow:
   1. Identify all blobs (multifurcating nodes in the TOB, out_degree > 2).
   2. Compute a global forbidden-edge set = direct out-edges of every blob in
      the ORIGINAL TOB. Forbidden edges are never cut, preserving each blob's
@@ -79,7 +79,7 @@ def prune_orphan_internals(H, real_taxa, outgroup_set=frozenset({'OUT'})):
 
 
 # ---------------------------------------------------------------------------
-# Blob relationships (reused from v1 verbatim)
+# Blob relationships
 # ---------------------------------------------------------------------------
 
 def find_direct_child_blobs_dict(blob_list, tob_tree):
@@ -124,9 +124,9 @@ def _subtree_index(H, all_blobs_set=None):
     Why this exists: `get_leafset(net, node)` rebuilds the WHOLE graph's leaf
     set on every call (the set comprehension over net.nodes runs before `node`
     is even looked at), so it costs O(n) no matter how small the subtree is.
-    The prune sweep asks for it once per edge, which is what makes the sweep
-    O(n^2). Precomputing both quantities in one pass costs O(V + E) and makes
-    every lookup O(1), so the sweep becomes O(n).
+    The prune sweep needs it once per edge, which would make the sweep O(n^2).
+    Precomputing both quantities in one pass costs O(V + E) and makes every
+    lookup O(1), so the sweep is O(n).
 
     Returns (leafcount, blob_below, n_leaves_total), or None when H has a node
     with in-degree > 1 or is not a DAG. Summing child counts is only valid
@@ -185,7 +185,7 @@ def _candidate_cut_edges(H, forbidden_edges, all_blobs_set=None, min_side=3,
     and the caller's `max(...)` selection only ever look at the size; the
     actual leafset is needed for exactly one edge (the winner), which the
     caller materialises with a single get_leafset() call. Building a set per
-    edge was O(n) per edge and made this sweep O(n^2).
+    edge would cost O(n) per edge and make this sweep O(n^2).
 
     `index` is the result of `_subtree_index(H, all_blobs_set)`; pass it in to
     reuse one post-order pass across the stopping test and this sweep. When it
@@ -275,8 +275,8 @@ def global_prune_pass(T, forbidden_edges, SIZE, all_blobs, real_taxa=None,
 
     while True:
         # One post-order pass per iteration, shared by the stopping test and
-        # the candidate sweep below. Both used to call get_leafset() per node
-        # or per edge, and each of those calls rescans the whole graph.
+        # the candidate sweep below; each get_leafset() call would otherwise
+        # rescan the whole graph.
         index = _subtree_index(H, all_blobs_set)
         leafcount = index[0] if index is not None else None
 
@@ -521,7 +521,7 @@ def isolate_mega_blobs(T, all_blobs, real_taxa=None,
 
 
 # ---------------------------------------------------------------------------
-# v1 helpers (used by generate_k_divisions for oversize-subtree
+# Cut helpers (used by generate_k_divisions for oversize-subtree
 # splitting on already-pruned subtrees with no blobs)
 # ---------------------------------------------------------------------------
 
@@ -588,7 +588,7 @@ def greedy_recursive_cuts(G, refined_cuttable_edges_list, num_cuts):
 # ---------------------------------------------------------------------------
 # TOB-induced subtrees for non_blob rows
 #
-# The v3 divider writes <div>/non_blob/tob_subnets.txt — one newick per row in
+# The divider writes <div>/non_blob/tob_subnets.txt — one newick per row in
 # subnet_idx order, where each newick is the TOB restricted to that row's
 # `all_leaves` (with degree-2 nodes contracted). The merger reads this file
 # instead of re-deriving it from metadata + TOB.

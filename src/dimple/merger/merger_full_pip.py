@@ -96,7 +96,7 @@ def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
 
     `dm` is the whole-dataset gene-tree distance matrix (see
     `compute_dm_full`), built once by the caller and shared across blobs. Pass
-    None to have each blob build its own the old way.
+    None to have each blob build its own.
 
     If max_runs is set, only the first `max_runs` run dirs (sorted by name —
     so run_000, run_001, …) are used."""
@@ -168,9 +168,9 @@ def per_blob_infer(blob_dir, blob_out_dir, gene_trees, subnet_source,
 def build_tob_prune_newicks(tob_path, metadata_dir, out_path):
     """Materialize <metadata_dir>/non_blob/tob_subnets.txt at out_path so the
     add_pruned_subtree step (which expects a file path) can consume it. The
-    v3 divider writes tob_subnets.txt directly; for older divisions we fall
-    back to building it from the metadata CSV + tob_path. Returns the number
-    of non-empty newick lines written."""
+    divider writes tob_subnets.txt; if it is missing, it is built from the
+    metadata CSV + tob_path. Returns the number of non-empty newick lines
+    written."""
     nwks = _load_non_blob_tob_subnets(metadata_dir, tob_path)
     with open(out_path, 'w') as f:
         for line in nwks:
@@ -333,8 +333,8 @@ def _run(args):
     # Built ONCE for the dataset and handed to every blob. compute_dm builds a
     # full N x N phylogenetic_distance_matrix() per gene tree -- O(G * N^2) --
     # and each blob only reads the sub-block for its own taxa, so doing it per
-    # blob repeated the same work `len(blobs)` times. Slicing a shared matrix
-    # is exact (see compute_dm_full), so results are unchanged.
+    # blob would repeat the same work `len(blobs)` times. Slicing a shared
+    # matrix is exact (see compute_dm_full).
     print(f'\n{"="*70}\n[stage 0] shared gene-tree distance matrix\n{"="*70}',
           flush=True)
     t0s = time.time(); c0s = _cpu_now()

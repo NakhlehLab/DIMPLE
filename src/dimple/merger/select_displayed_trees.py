@@ -48,9 +48,8 @@ def _restricted_counts(keep, observed_counts, cache):
 
     The denominator depends only on `keep`, and every displayed tree of one
     network has the same leaf set, so all of that network's candidates share
-    this. Scanning the blob's whole triplet dictionary per candidate --
-    re-filtering to the same taxa and re-summing the same denominator -- is
-    what this replaces.
+    this. Scanning the blob's whole triplet dictionary per candidate would
+    re-filter the same taxa and re-sum the same denominator every time.
     """
     key = frozenset(keep)
     hit = cache.get(key)

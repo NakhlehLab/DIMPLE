@@ -135,7 +135,7 @@ def merge(ds_dir, mode='full_merger', out_path=None, divisions_dir='dimple_out',
     if not os.path.isdir(combined_dir):
         print(f'ERROR: {combined_dir} not found'); return None
     # If --metadata-dir is set, use it for blob source_item + tob_leaves;
-    # otherwise default to divisions_dir (back-compat).
+    # otherwise default to divisions_dir.
     meta_dir = metadata_dir if metadata_dir else divisions_dir
 
     T = newick_to_nx(clean_extended_newick(open(tob_path).read().strip()))

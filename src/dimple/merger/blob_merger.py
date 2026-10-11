@@ -246,8 +246,7 @@ def run_merger(blob_dir, inputs_full_path, gene_trees, verbose=True,
     `compute_dm_full`, built once and shared across every blob. Downstream
     consumers already slice by label (`run_overlap_njmerge` takes
     `dm.loc[avail, avail]`, `compute_outgroup_distances` indexes by taxon), so
-    a superset matrix is used as-is. Pass None to compute a blob-local matrix
-    the old way.
+    a superset matrix is used as-is. Pass None to compute a blob-local matrix.
     """
     if source_blob_dir is None:
         source_blob_dir = blob_dir
@@ -461,7 +460,7 @@ def main():
 
     # Build the gene-tree distance matrix ONCE for the whole dataset. Every
     # blob reads a sub-block of the same matrix, so computing it per blob
-    # repeated O(G * N^2) work `len(blob_dirs)` times for no gain.
+    # would repeat O(G * N^2) work `len(blob_dirs)` times for no gain.
     dm_t0 = time.time()
     shared_dm = compute_dm_full(args.gene_trees, verbose=True)
     dm_build_seconds = time.time() - dm_t0
